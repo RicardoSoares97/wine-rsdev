@@ -17,6 +17,180 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(appx);
 
+/* set once in compositor_factory_ActivateInstance: real apps only ever
+ * activate one Compositor for the process lifetime, and every composition
+ * object real Windows creates implicitly belongs to whichever Compositor
+ * created it - a single shared pointer is a faithful minimal model of that
+ * for our single-Compositor-instance implementation. */
+static ICompositor *g_shared_compositor;
+
+/* ============================================================
+ * ICompositionObject - common base of Visual/CompositionBrush/
+ * CompositionTarget/VisualCollection. These 5 method bodies don't need
+ * per-type state (get_Compositor answers from the shared global above,
+ * the rest are legitimate no-ops/E_NOTIMPL), so every type's
+ * ICompositionObjectVtbl shares the same 5 function pointers; only
+ * QueryInterface/AddRef/Release need a per-type trampoline to delegate to
+ * the real owning object's refcount.
+ * ============================================================ */
+static HRESULT WINAPI co_GetIids( ICompositionObject *iface, ULONG *c, IID **i ) { (void)iface;(void)c;(void)i; return E_NOTIMPL; }
+static HRESULT WINAPI co_GetRuntimeClassName( ICompositionObject *iface, HSTRING *n ) { (void)iface;(void)n; return E_NOTIMPL; }
+static HRESULT WINAPI co_GetTrustLevel( ICompositionObject *iface, TrustLevel *t ) { (void)iface; *t = BaseTrust; return S_OK; }
+static HRESULT WINAPI co_get_Compositor( ICompositionObject *iface, ICompositor **value )
+{
+    (void)iface;
+    TRACE( "iface %p, value %p.\n", iface, value );
+    if (!value) return E_INVALIDARG;
+    if (!g_shared_compositor) { *value = NULL; return E_NOTIMPL; }
+    ICompositor_AddRef( g_shared_compositor );
+    *value = g_shared_compositor;
+    return S_OK;
+}
+static HRESULT WINAPI co_get_Dispatcher( ICompositionObject *iface, void **value )
+{
+    (void)iface;
+    TRACE( "iface %p, value %p.\n", iface, value );
+    if (value) *value = NULL;
+    return S_OK;
+}
+static HRESULT WINAPI co_get_Properties( ICompositionObject *iface, void **value )
+{
+    (void)iface;
+    TRACE( "iface %p, value %p.\n", iface, value );
+    if (value) *value = NULL;
+    return E_NOTIMPL;
+}
+static HRESULT WINAPI co_StartAnimation( ICompositionObject *iface, HSTRING property_name, void *animation )
+{
+    (void)iface;(void)animation;
+    TRACE( "iface %p, property_name %s, animation %p.\n", iface, debugstr_hstring(property_name), animation );
+    return S_OK;
+}
+static HRESULT WINAPI co_StopAnimation( ICompositionObject *iface, HSTRING property_name )
+{
+    (void)iface;
+    TRACE( "iface %p, property_name %s.\n", iface, debugstr_hstring(property_name) );
+    return S_OK;
+}
+
+/* ============================================================
+ * ICompositionColorBrush - solid-color brush returned by
+ * Compositor::CreateColorBrush()/CreateColorBrushWithColor(). Generic
+ * composition setup code (backdrops, placeholder backgrounds) creates one
+ * of these unconditionally in many apps, so leaving it E_NOTIMPL is a real
+ * crash risk even though we never actually render the color anywhere.
+ * ============================================================ */
+struct composition_color_brush
+{
+    ICompositionBrush ICompositionBrush_iface;
+    ICompositionColorBrush ICompositionColorBrush_iface;
+    ICompositionObject ICompositionObject_iface;
+    LONG ref;
+    UINT32 color;
+};
+
+static inline struct composition_color_brush *impl_from_ccb_ICompositionBrush( ICompositionBrush *iface )
+{
+    return CONTAINING_RECORD( iface, struct composition_color_brush, ICompositionBrush_iface );
+}
+static inline struct composition_color_brush *impl_from_ICompositionColorBrush( ICompositionColorBrush *iface )
+{
+    return CONTAINING_RECORD( iface, struct composition_color_brush, ICompositionColorBrush_iface );
+}
+static inline struct composition_color_brush *impl_from_ccb_ICompositionObject( ICompositionObject *iface )
+{
+    return CONTAINING_RECORD( iface, struct composition_color_brush, ICompositionObject_iface );
+}
+
+static HRESULT WINAPI ccb_brush_QueryInterface( ICompositionBrush *iface, REFIID iid, void **out )
+{
+    struct composition_color_brush *impl = impl_from_ccb_ICompositionBrush( iface );
+    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
+        IsEqualGUID( iid, &IID_ICompositionBrush_ ))
+    {
+        *out = &impl->ICompositionBrush_iface;
+        ICompositionBrush_AddRef( &impl->ICompositionBrush_iface );
+        return S_OK;
+    }
+    if (IsEqualGUID( iid, &IID_ICompositionColorBrush_ ))
+    {
+        *out = &impl->ICompositionColorBrush_iface;
+        ICompositionBrush_AddRef( &impl->ICompositionBrush_iface );
+        return S_OK;
+    }
+    if (IsEqualGUID( iid, &IID_ICompositionObject_ ))
+    {
+        *out = &impl->ICompositionObject_iface;
+        ICompositionBrush_AddRef( &impl->ICompositionBrush_iface );
+        return S_OK;
+    }
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+static ULONG WINAPI ccb_brush_AddRef( ICompositionBrush *iface ) { return InterlockedIncrement( &impl_from_ccb_ICompositionBrush(iface)->ref ); }
+static ULONG WINAPI ccb_brush_Release( ICompositionBrush *iface )
+{
+    struct composition_color_brush *impl = impl_from_ccb_ICompositionBrush( iface );
+    ULONG ref = InterlockedDecrement( &impl->ref );
+    if (!ref) free( impl );
+    return ref;
+}
+static HRESULT WINAPI ccb_brush_GetIids( ICompositionBrush *iface, ULONG *c, IID **i ) { (void)iface;(void)c;(void)i; return E_NOTIMPL; }
+static HRESULT WINAPI ccb_brush_GetRuntimeClassName( ICompositionBrush *iface, HSTRING *n ) { (void)iface;(void)n; return E_NOTIMPL; }
+static HRESULT WINAPI ccb_brush_GetTrustLevel( ICompositionBrush *iface, TrustLevel *t ) { (void)iface; *t = BaseTrust; return S_OK; }
+
+static const struct ICompositionBrushVtbl composition_color_brush_brush_vtbl =
+{
+    ccb_brush_QueryInterface, ccb_brush_AddRef, ccb_brush_Release,
+    ccb_brush_GetIids, ccb_brush_GetRuntimeClassName, ccb_brush_GetTrustLevel,
+};
+
+static HRESULT WINAPI ccb_QueryInterface( ICompositionColorBrush *iface, REFIID iid, void **out )
+{
+    return ccb_brush_QueryInterface( &impl_from_ICompositionColorBrush(iface)->ICompositionBrush_iface, iid, out );
+}
+static ULONG WINAPI ccb_AddRef( ICompositionColorBrush *iface ) { return InterlockedIncrement( &impl_from_ICompositionColorBrush(iface)->ref ); }
+static ULONG WINAPI ccb_Release( ICompositionColorBrush *iface ) { return ccb_brush_Release( &impl_from_ICompositionColorBrush(iface)->ICompositionBrush_iface ); }
+static HRESULT WINAPI ccb_GetIids( ICompositionColorBrush *iface, ULONG *c, IID **i ) { (void)iface;(void)c;(void)i; return E_NOTIMPL; }
+static HRESULT WINAPI ccb_GetRuntimeClassName( ICompositionColorBrush *iface, HSTRING *n ) { (void)iface;(void)n; return E_NOTIMPL; }
+static HRESULT WINAPI ccb_GetTrustLevel( ICompositionColorBrush *iface, TrustLevel *t ) { (void)iface; *t = BaseTrust; return S_OK; }
+static HRESULT WINAPI ccb_get_Color( ICompositionColorBrush *iface, UINT32 *v ) { *v = impl_from_ICompositionColorBrush(iface)->color; return S_OK; }
+static HRESULT WINAPI ccb_put_Color( ICompositionColorBrush *iface, UINT32 v ) { impl_from_ICompositionColorBrush(iface)->color = v; return S_OK; }
+
+static const struct ICompositionColorBrushVtbl composition_color_brush_vtbl =
+{
+    ccb_QueryInterface, ccb_AddRef, ccb_Release,
+    ccb_GetIids, ccb_GetRuntimeClassName, ccb_GetTrustLevel,
+    ccb_get_Color, ccb_put_Color,
+};
+
+static HRESULT WINAPI ccb_co_QueryInterface( ICompositionObject *iface, REFIID iid, void **out )
+{
+    return ccb_brush_QueryInterface( &impl_from_ccb_ICompositionObject(iface)->ICompositionBrush_iface, iid, out );
+}
+static ULONG WINAPI ccb_co_AddRef( ICompositionObject *iface ) { return InterlockedIncrement( &impl_from_ccb_ICompositionObject(iface)->ref ); }
+static ULONG WINAPI ccb_co_Release( ICompositionObject *iface ) { return ccb_brush_Release( &impl_from_ccb_ICompositionObject(iface)->ICompositionBrush_iface ); }
+
+static const struct ICompositionObjectVtbl composition_color_brush_object_vtbl =
+{
+    ccb_co_QueryInterface, ccb_co_AddRef, ccb_co_Release,
+    co_GetIids, co_GetRuntimeClassName, co_GetTrustLevel,
+    co_get_Compositor, co_get_Dispatcher, co_get_Properties, co_StartAnimation, co_StopAnimation,
+};
+
+static HRESULT create_composition_color_brush( UINT32 color, ICompositionColorBrush **out )
+{
+    struct composition_color_brush *impl = calloc( 1, sizeof(*impl) );
+    if (!impl) { *out = NULL; return E_OUTOFMEMORY; }
+    impl->ICompositionBrush_iface.lpVtbl = &composition_color_brush_brush_vtbl;
+    impl->ICompositionColorBrush_iface.lpVtbl = &composition_color_brush_vtbl;
+    impl->ICompositionObject_iface.lpVtbl = &composition_color_brush_object_vtbl;
+    impl->ref = 1;
+    impl->color = color;
+    *out = &impl->ICompositionColorBrush_iface;
+    return S_OK;
+}
+
 /* ============================================================
  * ICompositionSurface - opaque wrapper around whatever was handed to
  * ICompositorInterop::CreateCompositionSurfaceForSwapChain/ForHandle.
@@ -86,6 +260,7 @@ struct composition_surface_brush
 {
     ICompositionBrush ICompositionBrush_iface;
     ICompositionSurfaceBrush ICompositionSurfaceBrush_iface;
+    ICompositionObject ICompositionObject_iface;
     LONG ref;
     ICompositionSurface *surface;
     INT32 interpolation_mode, stretch;
@@ -99,6 +274,10 @@ static inline struct composition_surface_brush *impl_from_ICompositionBrush( ICo
 static inline struct composition_surface_brush *impl_from_ICompositionSurfaceBrush( ICompositionSurfaceBrush *iface )
 {
     return CONTAINING_RECORD( iface, struct composition_surface_brush, ICompositionSurfaceBrush_iface );
+}
+static inline struct composition_surface_brush *impl_from_csb_ICompositionObject( ICompositionObject *iface )
+{
+    return CONTAINING_RECORD( iface, struct composition_surface_brush, ICompositionObject_iface );
 }
 
 static HRESULT WINAPI csb_brush_QueryInterface( ICompositionBrush *iface, REFIID iid, void **out )
@@ -114,6 +293,12 @@ static HRESULT WINAPI csb_brush_QueryInterface( ICompositionBrush *iface, REFIID
     if (IsEqualGUID( iid, &IID_ICompositionSurfaceBrush_ ))
     {
         *out = &impl->ICompositionSurfaceBrush_iface;
+        ICompositionBrush_AddRef( &impl->ICompositionBrush_iface );
+        return S_OK;
+    }
+    if (IsEqualGUID( iid, &IID_ICompositionObject_ ))
+    {
+        *out = &impl->ICompositionObject_iface;
         ICompositionBrush_AddRef( &impl->ICompositionBrush_iface );
         return S_OK;
     }
@@ -186,12 +371,27 @@ static const struct ICompositionSurfaceBrushVtbl composition_surface_brush_vtbl 
     csb_get_VerticalAlignmentRatio, csb_put_VerticalAlignmentRatio,
 };
 
+static HRESULT WINAPI csb_co_QueryInterface( ICompositionObject *iface, REFIID iid, void **out )
+{
+    return csb_brush_QueryInterface( &impl_from_csb_ICompositionObject(iface)->ICompositionBrush_iface, iid, out );
+}
+static ULONG WINAPI csb_co_AddRef( ICompositionObject *iface ) { return InterlockedIncrement( &impl_from_csb_ICompositionObject(iface)->ref ); }
+static ULONG WINAPI csb_co_Release( ICompositionObject *iface ) { return csb_brush_Release( &impl_from_csb_ICompositionObject(iface)->ICompositionBrush_iface ); }
+
+static const struct ICompositionObjectVtbl composition_surface_brush_object_vtbl =
+{
+    csb_co_QueryInterface, csb_co_AddRef, csb_co_Release,
+    co_GetIids, co_GetRuntimeClassName, co_GetTrustLevel,
+    co_get_Compositor, co_get_Dispatcher, co_get_Properties, co_StartAnimation, co_StopAnimation,
+};
+
 static HRESULT create_composition_surface_brush( ICompositionSurface *surface, ICompositionSurfaceBrush **out )
 {
     struct composition_surface_brush *impl = calloc( 1, sizeof(*impl) );
     if (!impl) { *out = NULL; return E_OUTOFMEMORY; }
     impl->ICompositionBrush_iface.lpVtbl = &composition_surface_brush_brush_vtbl;
     impl->ICompositionSurfaceBrush_iface.lpVtbl = &composition_surface_brush_vtbl;
+    impl->ICompositionObject_iface.lpVtbl = &composition_surface_brush_object_vtbl;
     impl->ref = 1;
     impl->h_align = impl->v_align = 0.5f;
     if (surface) { impl->surface = surface; ICompositionSurface_AddRef( surface ); }
@@ -207,6 +407,7 @@ struct sprite_visual
     IVisual IVisual_iface;
     IVisual2 IVisual2_iface;
     ISpriteVisual ISpriteVisual_iface;
+    ICompositionObject ICompositionObject_iface;
     LONG ref;
     ICompositionBrush *brush;
     float offset[3], size[2], scale[3], center[3], anchor[2], rotation, rotation_deg;
@@ -225,6 +426,10 @@ static inline struct sprite_visual *impl_from_IVisual2( IVisual2 *iface )
 static inline struct sprite_visual *impl_from_ISpriteVisual( ISpriteVisual *iface )
 {
     return CONTAINING_RECORD( iface, struct sprite_visual, ISpriteVisual_iface );
+}
+static inline struct sprite_visual *impl_from_sv_ICompositionObject( ICompositionObject *iface )
+{
+    return CONTAINING_RECORD( iface, struct sprite_visual, ICompositionObject_iface );
 }
 
 static HRESULT WINAPI visual_QueryInterface( IVisual *iface, REFIID iid, void **out )
@@ -246,6 +451,12 @@ static HRESULT WINAPI visual_QueryInterface( IVisual *iface, REFIID iid, void **
     if (IsEqualGUID( iid, &IID_IVisual2_ ))
     {
         *out = &impl->IVisual2_iface;
+        IVisual_AddRef( &impl->IVisual_iface );
+        return S_OK;
+    }
+    if (IsEqualGUID( iid, &IID_ICompositionObject_ ))
+    {
+        *out = &impl->ICompositionObject_iface;
         IVisual_AddRef( &impl->IVisual_iface );
         return S_OK;
     }
@@ -381,6 +592,20 @@ static const struct IVisual2Vtbl sprite_visual2_vtbl =
     v2_get_RelativeSizeAdjustment, v2_put_RelativeSizeAdjustment,
 };
 
+static HRESULT WINAPI sv_co_QueryInterface( ICompositionObject *iface, REFIID iid, void **out )
+{
+    return visual_QueryInterface( &impl_from_sv_ICompositionObject(iface)->IVisual_iface, iid, out );
+}
+static ULONG WINAPI sv_co_AddRef( ICompositionObject *iface ) { return InterlockedIncrement( &impl_from_sv_ICompositionObject(iface)->ref ); }
+static ULONG WINAPI sv_co_Release( ICompositionObject *iface ) { return visual_Release( &impl_from_sv_ICompositionObject(iface)->IVisual_iface ); }
+
+static const struct ICompositionObjectVtbl sprite_visual_object_vtbl =
+{
+    sv_co_QueryInterface, sv_co_AddRef, sv_co_Release,
+    co_GetIids, co_GetRuntimeClassName, co_GetTrustLevel,
+    co_get_Compositor, co_get_Dispatcher, co_get_Properties, co_StartAnimation, co_StopAnimation,
+};
+
 static HRESULT create_sprite_visual( ISpriteVisual **out )
 {
     struct sprite_visual *impl = calloc( 1, sizeof(*impl) );
@@ -388,6 +613,7 @@ static HRESULT create_sprite_visual( ISpriteVisual **out )
     impl->IVisual_iface.lpVtbl = &sprite_visual_visual_vtbl;
     impl->IVisual2_iface.lpVtbl = &sprite_visual2_vtbl;
     impl->ISpriteVisual_iface.lpVtbl = &sprite_visual_vtbl;
+    impl->ICompositionObject_iface.lpVtbl = &sprite_visual_object_vtbl;
     impl->ref = 1;
     impl->scale[0] = impl->scale[1] = impl->scale[2] = 1.0f;
     impl->is_visible = TRUE;
@@ -405,6 +631,7 @@ static HRESULT create_sprite_visual( ISpriteVisual **out )
 struct visual_collection
 {
     IVisualCollection IVisualCollection_iface;
+    ICompositionObject ICompositionObject_iface;
     LONG ref;
     IVisual *children[MAX_VISUAL_CHILDREN];
     INT32 count;
@@ -414,13 +641,24 @@ static inline struct visual_collection *impl_from_IVisualCollection( IVisualColl
 {
     return CONTAINING_RECORD( iface, struct visual_collection, IVisualCollection_iface );
 }
+static inline struct visual_collection *impl_from_vc_ICompositionObject( ICompositionObject *iface )
+{
+    return CONTAINING_RECORD( iface, struct visual_collection, ICompositionObject_iface );
+}
 
 static HRESULT WINAPI vc_QueryInterface( IVisualCollection *iface, REFIID iid, void **out )
 {
+    struct visual_collection *impl = impl_from_IVisualCollection( iface );
     if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
         IsEqualGUID( iid, &IID_IVisualCollection_ ))
     {
         *out = iface;
+        iface->lpVtbl->AddRef( iface );
+        return S_OK;
+    }
+    if (IsEqualGUID( iid, &IID_ICompositionObject_ ))
+    {
+        *out = &impl->ICompositionObject_iface;
         iface->lpVtbl->AddRef( iface );
         return S_OK;
     }
@@ -487,11 +725,26 @@ static const struct IVisualCollectionVtbl visual_collection_vtbl =
     vc_get_Count, vc_InsertAbove, vc_InsertAtBottom, vc_InsertAtTop, vc_InsertBelow, vc_Remove, vc_RemoveAll,
 };
 
+static HRESULT WINAPI vc_co_QueryInterface( ICompositionObject *iface, REFIID iid, void **out )
+{
+    return vc_QueryInterface( &impl_from_vc_ICompositionObject(iface)->IVisualCollection_iface, iid, out );
+}
+static ULONG WINAPI vc_co_AddRef( ICompositionObject *iface ) { return InterlockedIncrement( &impl_from_vc_ICompositionObject(iface)->ref ); }
+static ULONG WINAPI vc_co_Release( ICompositionObject *iface ) { return vc_Release( &impl_from_vc_ICompositionObject(iface)->IVisualCollection_iface ); }
+
+static const struct ICompositionObjectVtbl visual_collection_object_vtbl =
+{
+    vc_co_QueryInterface, vc_co_AddRef, vc_co_Release,
+    co_GetIids, co_GetRuntimeClassName, co_GetTrustLevel,
+    co_get_Compositor, co_get_Dispatcher, co_get_Properties, co_StartAnimation, co_StopAnimation,
+};
+
 struct container_visual
 {
     IVisual IVisual_iface;
     IVisual2 IVisual2_iface;
     IContainerVisual IContainerVisual_iface;
+    ICompositionObject ICompositionObject_iface;
     LONG ref;
     struct visual_collection *children;
     float offset[3], size[2], scale[3], center[3], anchor[2], rotation, rotation_deg;
@@ -510,6 +763,10 @@ static inline struct container_visual *impl_from_container_IVisual2( IVisual2 *i
 static inline struct container_visual *impl_from_IContainerVisual( IContainerVisual *iface )
 {
     return CONTAINING_RECORD( iface, struct container_visual, IContainerVisual_iface );
+}
+static inline struct container_visual *impl_from_cv_ICompositionObject( ICompositionObject *iface )
+{
+    return CONTAINING_RECORD( iface, struct container_visual, ICompositionObject_iface );
 }
 
 static HRESULT WINAPI cv_visual_QueryInterface( IVisual *iface, REFIID iid, void **out )
@@ -531,6 +788,12 @@ static HRESULT WINAPI cv_visual_QueryInterface( IVisual *iface, REFIID iid, void
     if (IsEqualGUID( iid, &IID_IVisual2_ ))
     {
         *out = &impl->IVisual2_iface;
+        IVisual_AddRef( &impl->IVisual_iface );
+        return S_OK;
+    }
+    if (IsEqualGUID( iid, &IID_ICompositionObject_ ))
+    {
+        *out = &impl->ICompositionObject_iface;
         IVisual_AddRef( &impl->IVisual_iface );
         return S_OK;
     }
@@ -658,6 +921,20 @@ static const struct IVisual2Vtbl container_visual2_vtbl =
     cv2_get_RelativeSizeAdjustment, cv2_put_RelativeSizeAdjustment,
 };
 
+static HRESULT WINAPI cv_co_QueryInterface( ICompositionObject *iface, REFIID iid, void **out )
+{
+    return cv_visual_QueryInterface( &impl_from_cv_ICompositionObject(iface)->IVisual_iface, iid, out );
+}
+static ULONG WINAPI cv_co_AddRef( ICompositionObject *iface ) { return InterlockedIncrement( &impl_from_cv_ICompositionObject(iface)->ref ); }
+static ULONG WINAPI cv_co_Release( ICompositionObject *iface ) { return cv_visual_Release( &impl_from_cv_ICompositionObject(iface)->IVisual_iface ); }
+
+static const struct ICompositionObjectVtbl container_visual_object_vtbl =
+{
+    cv_co_QueryInterface, cv_co_AddRef, cv_co_Release,
+    co_GetIids, co_GetRuntimeClassName, co_GetTrustLevel,
+    co_get_Compositor, co_get_Dispatcher, co_get_Properties, co_StartAnimation, co_StopAnimation,
+};
+
 static HRESULT create_container_visual( IVisual **out )
 {
     struct container_visual *impl = calloc( 1, sizeof(*impl) );
@@ -665,11 +942,13 @@ static HRESULT create_container_visual( IVisual **out )
     if (!impl) { *out = NULL; return E_OUTOFMEMORY; }
     if (!(coll = calloc( 1, sizeof(*coll) ))) { free( impl ); *out = NULL; return E_OUTOFMEMORY; }
     coll->IVisualCollection_iface.lpVtbl = &visual_collection_vtbl;
+    coll->ICompositionObject_iface.lpVtbl = &visual_collection_object_vtbl;
     coll->ref = 1;
 
     impl->IVisual_iface.lpVtbl = &container_visual_visual_vtbl;
     impl->IVisual2_iface.lpVtbl = &container_visual2_vtbl;
     impl->IContainerVisual_iface.lpVtbl = &container_visual_vtbl;
+    impl->ICompositionObject_iface.lpVtbl = &container_visual_object_vtbl;
     impl->ref = 1;
     impl->children = coll;
     impl->scale[0] = impl->scale[1] = impl->scale[2] = 1.0f;
@@ -687,6 +966,7 @@ struct composition_target
     ICompositionTarget ICompositionTarget_iface;
     IDesktopWindowTarget IDesktopWindowTarget_iface;
     ICompositionSupportsSystemBackdrop ICompositionSupportsSystemBackdrop_iface;
+    ICompositionObject ICompositionObject_iface;
     LONG ref;
     HWND hwnd;
     IVisual *root;
@@ -707,6 +987,10 @@ static inline struct composition_target *impl_from_IDesktopWindowTarget( IDeskto
 static inline struct composition_target *impl_from_ICompositionSupportsSystemBackdrop( ICompositionSupportsSystemBackdrop *iface )
 {
     return CONTAINING_RECORD( iface, struct composition_target, ICompositionSupportsSystemBackdrop_iface );
+}
+static inline struct composition_target *impl_from_target_ICompositionObject( ICompositionObject *iface )
+{
+    return CONTAINING_RECORD( iface, struct composition_target, ICompositionObject_iface );
 }
 
 /* walks Root -> ISpriteVisual -> Brush -> ICompositionSurfaceBrush -> Surface
@@ -873,6 +1157,12 @@ static HRESULT WINAPI target_QueryInterface( ICompositionTarget *iface, REFIID i
         ICompositionTarget_AddRef( &impl->ICompositionTarget_iface );
         return S_OK;
     }
+    if (IsEqualGUID( iid, &IID_ICompositionObject_ ))
+    {
+        *out = &impl->ICompositionObject_iface;
+        ICompositionTarget_AddRef( &impl->ICompositionTarget_iface );
+        return S_OK;
+    }
     ERR( "composition_target: %s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
     *out = NULL;
     return E_NOINTERFACE;
@@ -980,6 +1270,20 @@ static const struct ICompositionSupportsSystemBackdropVtbl composition_supports_
     backdrop_get_SystemBackdrop, backdrop_put_SystemBackdrop,
 };
 
+static HRESULT WINAPI target_co_QueryInterface( ICompositionObject *iface, REFIID iid, void **out )
+{
+    return target_QueryInterface( &impl_from_target_ICompositionObject(iface)->ICompositionTarget_iface, iid, out );
+}
+static ULONG WINAPI target_co_AddRef( ICompositionObject *iface ) { return InterlockedIncrement( &impl_from_target_ICompositionObject(iface)->ref ); }
+static ULONG WINAPI target_co_Release( ICompositionObject *iface ) { return target_Release( &impl_from_target_ICompositionObject(iface)->ICompositionTarget_iface ); }
+
+static const struct ICompositionObjectVtbl composition_target_object_vtbl =
+{
+    target_co_QueryInterface, target_co_AddRef, target_co_Release,
+    co_GetIids, co_GetRuntimeClassName, co_GetTrustLevel,
+    co_get_Compositor, co_get_Dispatcher, co_get_Properties, co_StartAnimation, co_StopAnimation,
+};
+
 static HRESULT create_desktop_window_target( HWND hwnd, BOOL topmost, IDesktopWindowTarget **out )
 {
     struct composition_target *impl = calloc( 1, sizeof(*impl) );
@@ -987,6 +1291,7 @@ static HRESULT create_desktop_window_target( HWND hwnd, BOOL topmost, IDesktopWi
     impl->ICompositionTarget_iface.lpVtbl = &composition_target_vtbl;
     impl->IDesktopWindowTarget_iface.lpVtbl = &desktop_window_target_vtbl;
     impl->ICompositionSupportsSystemBackdrop_iface.lpVtbl = &composition_supports_system_backdrop_vtbl;
+    impl->ICompositionObject_iface.lpVtbl = &composition_target_object_vtbl;
     impl->ref = 1;
     impl->hwnd = hwnd;
     impl->topmost = !!topmost;
@@ -1069,8 +1374,18 @@ static HRESULT WINAPI compositor_GetRuntimeClassName( ICompositor *iface, HSTRIN
 static HRESULT WINAPI compositor_GetTrustLevel( ICompositor *iface, TrustLevel *t ) { (void)iface; *t = BaseTrust; return S_OK; }
 
 static HRESULT WINAPI compositor_CreateColorKeyFrameAnimation( ICompositor *iface, void **r ) { (void)iface; ERR("stub\n"); *r=NULL; return E_NOTIMPL; }
-static HRESULT WINAPI compositor_CreateColorBrush( ICompositor *iface, void **r ) { (void)iface; *r=NULL; return E_NOTIMPL; }
-static HRESULT WINAPI compositor_CreateColorBrushWithColor( ICompositor *iface, UINT64 c, void **r ) { (void)iface;(void)c; *r=NULL; return E_NOTIMPL; }
+static HRESULT WINAPI compositor_CreateColorBrush( ICompositor *iface, void **r )
+{
+    (void)iface;
+    TRACE( "iface %p, result %p.\n", iface, r );
+    return create_composition_color_brush( 0, (ICompositionColorBrush **)r );
+}
+static HRESULT WINAPI compositor_CreateColorBrushWithColor( ICompositor *iface, UINT64 c, void **r )
+{
+    (void)iface;
+    TRACE( "iface %p, color %#I64x, result %p.\n", iface, c, r );
+    return create_composition_color_brush( (UINT32)c, (ICompositionColorBrush **)r );
+}
 static HRESULT WINAPI compositor_CreateContainerVisual( ICompositor *iface, void **r )
 {
     (void)iface;
@@ -1242,6 +1557,16 @@ static HRESULT WINAPI compositor_factory_ActivateInstance( IActivationFactory *i
     impl->ICompositorDesktopInterop_iface.lpVtbl = &compositor_desktop_interop_vtbl;
     impl->ref = 1;
 
+    /* stash an extra-AddRef'd reference so ICompositionObject::get_Compositor
+     * (implemented on every visual/brush/target/collection we hand out) can
+     * keep answering with a live Compositor pointer for as long as the
+     * process runs, independent of how many refs the caller itself drops. */
+    if (!g_shared_compositor)
+    {
+        g_shared_compositor = &impl->ICompositor_iface;
+        ICompositor_AddRef( g_shared_compositor );
+    }
+
     *instance = (IInspectable *)&impl->ICompositor_iface;
     return S_OK;
 }
@@ -1256,3 +1581,214 @@ static const struct IActivationFactoryVtbl compositor_factory_vtbl =
 static struct compositor_statics compositor_statics = { {&compositor_factory_vtbl}, 1 };
 
 IActivationFactory *compositor_factory = &compositor_statics.IActivationFactory_iface;
+
+/* ============================================================
+ * Windows.UI.Composition.CompositionCapabilities
+ *
+ * A Windows 10 1809+ capability-probe class apps query to decide whether to
+ * use composition effects (blur, shadows, etc.) at all. We report "yes,
+ * supported and fast" unconditionally: our blit-thread doesn't actually
+ * implement any real compositor effects, but a real Windows box always has
+ * *some* GPU capable of this, and apps generally only use this to choose a
+ * visual style, not as a hard functional dependency - reporting the
+ * optimistic answer keeps us on the same code path a real machine would
+ * take instead of an unusual/rare "no effects" fallback path that is far
+ * less exercised in practice and more likely to itself be broken.
+ * add_Changed/remove_Changed are legitimate no-ops: nothing in this
+ * implementation ever changes capabilities at runtime, so the event never
+ * needs to fire.
+ * ============================================================ */
+
+struct composition_capabilities
+{
+    ICompositionCapabilities ICompositionCapabilities_iface;
+    LONG ref;
+};
+
+static inline struct composition_capabilities *impl_from_ICompositionCapabilities( ICompositionCapabilities *iface )
+{
+    return CONTAINING_RECORD( iface, struct composition_capabilities, ICompositionCapabilities_iface );
+}
+
+static HRESULT WINAPI capabilities_QueryInterface( ICompositionCapabilities *iface, REFIID iid, void **out )
+{
+    struct composition_capabilities *impl = impl_from_ICompositionCapabilities( iface );
+
+    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
+        IsEqualGUID( iid, &IID_ICompositionCapabilities_ ))
+    {
+        *out = &impl->ICompositionCapabilities_iface;
+        ICompositionCapabilities_AddRef( &impl->ICompositionCapabilities_iface );
+        return S_OK;
+    }
+    ERR( "composition_capabilities: %s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+static ULONG WINAPI capabilities_AddRef( ICompositionCapabilities *iface )
+{
+    return InterlockedIncrement( &impl_from_ICompositionCapabilities(iface)->ref );
+}
+static ULONG WINAPI capabilities_Release( ICompositionCapabilities *iface )
+{
+    struct composition_capabilities *impl = impl_from_ICompositionCapabilities( iface );
+    ULONG ref = InterlockedDecrement( &impl->ref );
+    if (!ref) free( impl );
+    return ref;
+}
+static HRESULT WINAPI capabilities_GetIids( ICompositionCapabilities *iface, ULONG *c, IID **i ) { (void)iface;(void)c;(void)i; return E_NOTIMPL; }
+static HRESULT WINAPI capabilities_GetRuntimeClassName( ICompositionCapabilities *iface, HSTRING *n ) { (void)iface;(void)n; return E_NOTIMPL; }
+static HRESULT WINAPI capabilities_GetTrustLevel( ICompositionCapabilities *iface, TrustLevel *t ) { (void)iface; *t = BaseTrust; return S_OK; }
+static HRESULT WINAPI capabilities_AreEffectsSupported( ICompositionCapabilities *iface, boolean *value )
+{
+    (void)iface;
+    TRACE( "iface %p, value %p.\n", iface, value );
+    *value = TRUE;
+    return S_OK;
+}
+static HRESULT WINAPI capabilities_AreEffectsFast( ICompositionCapabilities *iface, boolean *value )
+{
+    (void)iface;
+    TRACE( "iface %p, value %p.\n", iface, value );
+    *value = TRUE;
+    return S_OK;
+}
+static HRESULT WINAPI capabilities_add_Changed( ICompositionCapabilities *iface, void *handler, INT64 *token )
+{
+    (void)iface;(void)handler;
+    TRACE( "iface %p, handler %p, token %p.\n", iface, handler, token );
+    if (token) *token = 1;
+    return S_OK;
+}
+static HRESULT WINAPI capabilities_remove_Changed( ICompositionCapabilities *iface, INT64 token )
+{
+    (void)iface;(void)token;
+    TRACE( "iface %p, token %#I64x.\n", iface, token );
+    return S_OK;
+}
+
+static const struct ICompositionCapabilitiesVtbl composition_capabilities_vtbl =
+{
+    capabilities_QueryInterface, capabilities_AddRef, capabilities_Release,
+    capabilities_GetIids, capabilities_GetRuntimeClassName, capabilities_GetTrustLevel,
+    capabilities_AreEffectsSupported, capabilities_AreEffectsFast,
+    capabilities_add_Changed, capabilities_remove_Changed,
+};
+
+/* --- activation factory: also implements ICompositionCapabilitiesStatics --- */
+struct composition_capabilities_statics
+{
+    IActivationFactory IActivationFactory_iface;
+    ICompositionCapabilitiesStatics ICompositionCapabilitiesStatics_iface;
+    LONG ref;
+    /* Real Windows returns the same shared instance for GetForCurrentView()
+     * on repeated calls (it represents "this view", not a fresh object each
+     * time); we only ever have one view, so a single lazily-created,
+     * refcounted instance is a faithful minimal implementation. */
+    struct composition_capabilities *shared;
+};
+
+static inline struct composition_capabilities_statics *impl_from_capabilities_factory( IActivationFactory *iface )
+{
+    return CONTAINING_RECORD( iface, struct composition_capabilities_statics, IActivationFactory_iface );
+}
+static inline struct composition_capabilities_statics *impl_from_ICompositionCapabilitiesStatics( ICompositionCapabilitiesStatics *iface )
+{
+    return CONTAINING_RECORD( iface, struct composition_capabilities_statics, ICompositionCapabilitiesStatics_iface );
+}
+
+static HRESULT WINAPI capabilities_factory_QueryInterface( IActivationFactory *iface, REFIID iid, void **out )
+{
+    struct composition_capabilities_statics *impl = impl_from_capabilities_factory( iface );
+
+    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
+        IsEqualGUID( iid, &IID_IActivationFactory ))
+    {
+        *out = &impl->IActivationFactory_iface;
+        IInspectable_AddRef( (IInspectable *)*out );
+        return S_OK;
+    }
+    if (IsEqualGUID( iid, &IID_ICompositionCapabilitiesStatics_ ))
+    {
+        *out = &impl->ICompositionCapabilitiesStatics_iface;
+        IInspectable_AddRef( (IInspectable *)&impl->IActivationFactory_iface );
+        return S_OK;
+    }
+    ERR( "composition_capabilities_factory: %s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+static ULONG WINAPI capabilities_factory_AddRef( IActivationFactory *iface ) { return InterlockedIncrement( &impl_from_capabilities_factory(iface)->ref ); }
+static ULONG WINAPI capabilities_factory_Release( IActivationFactory *iface ) { return InterlockedDecrement( &impl_from_capabilities_factory(iface)->ref ); }
+static HRESULT WINAPI capabilities_factory_GetIids( IActivationFactory *iface, ULONG *c, IID **i ) { (void)iface;(void)c;(void)i; return E_NOTIMPL; }
+static HRESULT WINAPI capabilities_factory_GetRuntimeClassName( IActivationFactory *iface, HSTRING *n ) { (void)iface;(void)n; return E_NOTIMPL; }
+static HRESULT WINAPI capabilities_factory_GetTrustLevel( IActivationFactory *iface, TrustLevel *t ) { (void)iface; *t = BaseTrust; return S_OK; }
+static HRESULT WINAPI capabilities_factory_ActivateInstance( IActivationFactory *iface, IInspectable **instance )
+{
+    (void)iface;
+    TRACE( "iface %p, instance %p.\n", iface, instance );
+    *instance = NULL;
+    return E_NOTIMPL;
+}
+
+static const struct IActivationFactoryVtbl capabilities_factory_vtbl =
+{
+    capabilities_factory_QueryInterface, capabilities_factory_AddRef, capabilities_factory_Release,
+    capabilities_factory_GetIids, capabilities_factory_GetRuntimeClassName, capabilities_factory_GetTrustLevel,
+    capabilities_factory_ActivateInstance,
+};
+
+static HRESULT WINAPI capabilities_statics_QueryInterface( ICompositionCapabilitiesStatics *iface, REFIID iid, void **out )
+{
+    return capabilities_factory_QueryInterface( &impl_from_ICompositionCapabilitiesStatics(iface)->IActivationFactory_iface, iid, out );
+}
+static ULONG WINAPI capabilities_statics_AddRef( ICompositionCapabilitiesStatics *iface )
+{
+    return InterlockedIncrement( &impl_from_ICompositionCapabilitiesStatics(iface)->ref );
+}
+static ULONG WINAPI capabilities_statics_Release( ICompositionCapabilitiesStatics *iface )
+{
+    return capabilities_factory_Release( &impl_from_ICompositionCapabilitiesStatics(iface)->IActivationFactory_iface );
+}
+static HRESULT WINAPI capabilities_statics_GetIids( ICompositionCapabilitiesStatics *iface, ULONG *c, IID **i ) { (void)iface;(void)c;(void)i; return E_NOTIMPL; }
+static HRESULT WINAPI capabilities_statics_GetRuntimeClassName( ICompositionCapabilitiesStatics *iface, HSTRING *n ) { (void)iface;(void)n; return E_NOTIMPL; }
+static HRESULT WINAPI capabilities_statics_GetTrustLevel( ICompositionCapabilitiesStatics *iface, TrustLevel *t ) { (void)iface; *t = BaseTrust; return S_OK; }
+
+static HRESULT WINAPI capabilities_statics_GetForCurrentView( ICompositionCapabilitiesStatics *iface, ICompositionCapabilities **result )
+{
+    struct composition_capabilities_statics *impl = impl_from_ICompositionCapabilitiesStatics( iface );
+
+    TRACE( "iface %p, result %p.\n", iface, result );
+
+    if (!impl->shared)
+    {
+        struct composition_capabilities *cap;
+
+        if (!(cap = calloc( 1, sizeof(*cap) )))
+        {
+            *result = NULL;
+            return E_OUTOFMEMORY;
+        }
+        cap->ICompositionCapabilities_iface.lpVtbl = &composition_capabilities_vtbl;
+        cap->ref = 1;
+        impl->shared = cap;
+    }
+
+    capabilities_AddRef( &impl->shared->ICompositionCapabilities_iface );
+    *result = &impl->shared->ICompositionCapabilities_iface;
+    return S_OK;
+}
+
+static const struct ICompositionCapabilitiesStaticsVtbl capabilities_statics_vtbl =
+{
+    capabilities_statics_QueryInterface, capabilities_statics_AddRef, capabilities_statics_Release,
+    capabilities_statics_GetIids, capabilities_statics_GetRuntimeClassName, capabilities_statics_GetTrustLevel,
+    capabilities_statics_GetForCurrentView,
+};
+
+static struct composition_capabilities_statics composition_capabilities_statics =
+{
+    { &capabilities_factory_vtbl }, { &capabilities_statics_vtbl }, 1, NULL
+};
+
+IActivationFactory *composition_capabilities_factory = &composition_capabilities_statics.IActivationFactory_iface;

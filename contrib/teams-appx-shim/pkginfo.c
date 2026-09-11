@@ -284,7 +284,12 @@ HRESULT StageAndRegisterMsix( const wchar_t *winPath, wchar_t **outFamilyName )
         RegCloseKey(hkey);
     }
 
-    *outFamilyName = _wcsdup(familyName);
+    {
+        size_t len = wcslen(familyName) + 1;
+        wchar_t *dup = malloc(len * sizeof(wchar_t));
+        if (dup) memcpy(dup, familyName, len * sizeof(wchar_t));
+        *outFamilyName = dup;
+    }
     return S_OK;
 }
 
@@ -304,12 +309,27 @@ struct pkginfo_ref
     PACKAGE_VERSION version;
 };
 
+/* local ASCII-range case-insensitive wide compare: avoids depending on an
+ * msvcrt/ntdll import just for this one lookup (arch names here are always
+ * plain ASCII, e.g. "x64"/"arm64"). */
+static int wcsicmp_ascii( const wchar_t *a, const wchar_t *b )
+{
+    for (;; a++, b++)
+    {
+        wchar_t ca = *a, cb = *b;
+        if (ca >= L'A' && ca <= L'Z') ca += L'a' - L'A';
+        if (cb >= L'A' && cb <= L'Z') cb += L'a' - L'A';
+        if (ca != cb) return ca < cb ? -1 : 1;
+        if (!ca) return 0;
+    }
+}
+
 static UINT32 ArchStringToCode( const wchar_t *arch )
 {
-    if (!_wcsicmp(arch, L"x64")) return 9;
-    if (!_wcsicmp(arch, L"x86")) return 0;
-    if (!_wcsicmp(arch, L"arm64")) return 12;
-    if (!_wcsicmp(arch, L"arm")) return 5;
+    if (!wcsicmp_ascii(arch, L"x64")) return 9;
+    if (!wcsicmp_ascii(arch, L"x86")) return 0;
+    if (!wcsicmp_ascii(arch, L"arm64")) return 12;
+    if (!wcsicmp_ascii(arch, L"arm")) return 5;
     return 11; /* neutral */
 }
 

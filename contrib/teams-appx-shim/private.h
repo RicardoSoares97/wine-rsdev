@@ -553,6 +553,54 @@ DEFINE_GUID(IID_ICompositionCapabilitiesStatics_, 0xf7b7a86e,0x6416,0x49e5,0x8d,
 
 extern IActivationFactory *composition_capabilities_factory;
 
+#define ICompositionCapabilities_AddRef(p) (p)->lpVtbl->AddRef(p)
+#define ICompositionCapabilities_Release(p) (p)->lpVtbl->Release(p)
+
+/* Windows.UI.Composition.CompositionObject - the common base interface of
+ * Visual, CompositionBrush, CompositionTarget and VisualCollection (and
+ * others we don't implement yet). Real Windows apps routinely QueryInterface
+ * any composition object to this to walk back up to its owning Compositor
+ * (get_Compositor); without it that QI just fails and callers that don't
+ * expect that throw. GUID verified against windows-rs tag 74. */
+typedef struct ICompositionObject ICompositionObject;
+typedef struct ICompositionObjectVtbl
+{
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(ICompositionObject*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(ICompositionObject*);
+    ULONG   (STDMETHODCALLTYPE *Release)(ICompositionObject*);
+    HRESULT (STDMETHODCALLTYPE *GetIids)(ICompositionObject*, ULONG*, IID**);
+    HRESULT (STDMETHODCALLTYPE *GetRuntimeClassName)(ICompositionObject*, HSTRING*);
+    HRESULT (STDMETHODCALLTYPE *GetTrustLevel)(ICompositionObject*, TrustLevel*);
+    HRESULT (STDMETHODCALLTYPE *get_Compositor)(ICompositionObject*, ICompositor**);
+    HRESULT (STDMETHODCALLTYPE *get_Dispatcher)(ICompositionObject*, void**);
+    HRESULT (STDMETHODCALLTYPE *get_Properties)(ICompositionObject*, void**);
+    HRESULT (STDMETHODCALLTYPE *StartAnimation)(ICompositionObject*, HSTRING, void*);
+    HRESULT (STDMETHODCALLTYPE *StopAnimation)(ICompositionObject*, HSTRING);
+} ICompositionObjectVtbl;
+struct ICompositionObject { ICompositionObjectVtbl *lpVtbl; };
+DEFINE_GUID(IID_ICompositionObject_, 0xbcb4ad45,0x7609,0x4550,0x93,0x4f,0x16,0x00,0x2a,0x68,0xfd,0xed);
+
+#define ICompositionObject_AddRef(p) (p)->lpVtbl->AddRef(p)
+#define ICompositionObject_Release(p) (p)->lpVtbl->Release(p)
+
+/* Windows.UI.Composition.CompositionColorBrush - a solid-color brush;
+ * Compositor::CreateColorBrush()/CreateColorBrushWithColor() return one of
+ * these. GUID verified against windows-rs tag 74 / the WDK IDL mirror. */
+typedef struct ICompositionColorBrush ICompositionColorBrush;
+typedef struct ICompositionColorBrushVtbl
+{
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(ICompositionColorBrush*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(ICompositionColorBrush*);
+    ULONG   (STDMETHODCALLTYPE *Release)(ICompositionColorBrush*);
+    HRESULT (STDMETHODCALLTYPE *GetIids)(ICompositionColorBrush*, ULONG*, IID**);
+    HRESULT (STDMETHODCALLTYPE *GetRuntimeClassName)(ICompositionColorBrush*, HSTRING*);
+    HRESULT (STDMETHODCALLTYPE *GetTrustLevel)(ICompositionColorBrush*, TrustLevel*);
+    HRESULT (STDMETHODCALLTYPE *get_Color)(ICompositionColorBrush*, UINT32*);
+    HRESULT (STDMETHODCALLTYPE *put_Color)(ICompositionColorBrush*, UINT32);
+} ICompositionColorBrushVtbl;
+struct ICompositionColorBrush { ICompositionColorBrushVtbl *lpVtbl; };
+DEFINE_GUID(IID_ICompositionColorBrush_, 0x2b264c5e,0xbf35,0x4831,0x86,0x42,0xcf,0x70,0xc2,0x0f,0xff,0x2f);
+
 /* hand-rolled COBJMACROS-style helpers - these interfaces aren't
  * widl-generated, so nothing auto-provides the usual IFoo_Method(p, ...)
  * wrapper macros. Only the members composition.c actually calls. */

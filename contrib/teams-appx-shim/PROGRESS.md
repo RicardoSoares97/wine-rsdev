@@ -34,10 +34,12 @@ resto deste commit/branch, nos ficheiros normais de `dlls/*`.
    só não havia forma de essas frames chegarem ao ecrã (ver secção seguinte).
 5. **Implementação própria de `Windows.UI.Composition`** (Wine não tem
    suporte nativo nenhum a isto): `Compositor`, `Visual`/`SpriteVisual`/
-   `ContainerVisual`, `CompositionBrush`/`CompositionSurfaceBrush`,
-   `CompositionTarget`/`DesktopWindowTarget`, `VisualCollection` — todos com
-   GUIDs verificados contra fontes autoritativas (windows-rs tag `74`, WDK IDL
-   mirror `wmliang/wdk-10`), nunca adivinhados.
+   `ContainerVisual`, `CompositionBrush`/`CompositionSurfaceBrush`/
+   `CompositionColorBrush`, `CompositionTarget`/`DesktopWindowTarget`,
+   `VisualCollection`, `CompositionCapabilities`, e a interface base comum
+   `CompositionObject` (ver abaixo) — todos com GUIDs verificados contra
+   fontes autoritativas (windows-rs tag `74`, WDK IDL mirror `wmliang/wdk-10`),
+   nunca adivinhados.
 6. **"Blit thread"**: como o Wine não tem DWM/DirectComposition real, foi
    escrita uma thread de fundo que lê o conteúdo da swapchain do Teams via
    `IDXGISwapChain_GetBuffer` + `CopyResource` para uma textura de staging, e
@@ -48,7 +50,72 @@ resto deste commit/branch, nos ficheiros normais de `dlls/*`.
    Usar sempre `wineserver -k && wineserver -w` antes de cada teste — ver
    ficheiro para detalhes.
 
-## Bugs reais encontrados e corrigidos nesta sessão
+## Ronda seguinte (depois do commit inicial): CompositionCapabilities + CompositionObject + CompositionColorBrush
+
+Retomado o trabalho exatamente onde tinha ficado (ver "O que falta" da versão
+anterior deste documento). Três interfaces novas implementadas e verificadas
+nesta ronda, cada uma confirmada a avançar o ponto onde o Teams falha (ciclo
+"corre com harness limpo → apanha exceção → radare2 + extração de GUID →
+implementa → recompila → retesta", exatamente como descrito na secção de
+metodologia abaixo):
+
+1. **`ICompositionCapabilities` / `ICompositionCapabilitiesStatics`** —
+   implementadas em `composition.c` (classe estática, `GetForCurrentView()`
+   devolve uma instância partilhada só com `AreEffectsSupported`/
+   `AreEffectsFast` a responder `TRUE`), registadas no dispatcher de
+   `main.c` e em `register_compositioncapabilities(_wow).reg`. Confirmado via
+   log que `RoGetActivationFactory` para esta classe passa a ter sucesso.
+2. **`ICompositionObject` em falta em TODOS os nossos objetos de composição**
+   — bug real encontrado por reverse engineering (não estava previsto):
+   depois de `CompositionCapabilities` resolver, o Teams continuava a
+   crashar com uma exceção C++ (`0xe06d7363`). Backtrace via `winedbg`
+   (`bt` depois de `c`, usando um FIFO para injetar comandos só depois da
+   exceção acontecer) apontou para um `QueryInterface` CFG-dispatched cujo
+   GUID (extraído via o script Python de parsing manual do PE) era
+   `bcb4ad45-7609-4550-934f-16002a68fded` = `ICompositionObject` — a
+   interface base comum de `Visual`, `CompositionBrush`, `CompositionTarget`
+   e `VisualCollection` no Windows real (confirmado no IDL: todas estas
+   `runtimeclass` têm `: Windows.UI.Composition.CompositionObject`). Código
+   genérico do Teams faz `QueryInterface` a QUALQUER objeto de composição
+   para `ICompositionObject` e chama `get_Compositor()` nele — nenhum dos
+   nossos objetos respondia a essa interface, logo a QI falhava e o Teams
+   lançava uma exceção não tratada. Corrigido adicionando suporte a
+   `ICompositionObject` (`QueryInterface`/`AddRef`/`Release` próprios por
+   tipo, delegando para o refcount real do objeto; os 5 métodos reais —
+   `get_Compositor`, `get_Dispatcher`, `get_Properties`, `StartAnimation`,
+   `StopAnimation` — são implementações **partilhadas** entre todos os tipos
+   já que nenhum precisa de estado específico do tipo) a `sprite_visual`,
+   `container_visual`, `composition_surface_brush`, `composition_target` e
+   `visual_collection`. `get_Compositor()` devolve um ponteiro global
+   (`g_shared_compositor`, com um AddRef extra para nunca morrer) guardado
+   quando o `Compositor` é ativado pela primeira vez — modelo correto para
+   este shim porque o Teams só ativa um `Compositor` por processo.
+3. **`Compositor::CreateColorBrush`/`CreateColorBrushWithColor` em falta**
+   — depois do fix de `ICompositionObject`, novo crash mais profundo no
+   mesmo caminho de setup. Desta vez, em vez de extrair o GUID (a chamada
+   não era um `QueryInterface`, era uma chamada direta a um slot de vtable),
+   comparou-se o offset do slot chamado (`[rax+0x38]` = slot 7) com a ordem
+   real dos métodos do `ICompositor` e confirmou-se por eliminação: o slot 6
+   (`CreateColorKeyFrameAnimation`) já tinha logging visível e não apareceu
+   no log antes do crash, logo só podia ser o slot 7 = `CreateColorBrush`.
+   Implementada uma `ICompositionColorBrush` real (GUID
+   `2b264c5e-bf35-4831-8642-cf70c20fff2f`, verificado no IDL) com
+   `get_Color`/`put_Color`, e ligada aos dois métodos do Compositor.
+
+**Resultado depois destas três correções**: o Teams avança bastante mais no
+arranque — chega a pedir `Windows.ApplicationModel.Core.CoreApplication`
+(`RoGetActivationFactory` com GUID `0aacf7a4-5e1d-49df-8034-fb6a68bc5ed1`) e
+`Microsoft.Graphics.Canvas.CanvasDevice`/`Windows.Foundation.PropertyValue`,
+antes de eventualmente crashar outra vez com o mesmo tipo de exceção
+(`0xe06d7363`). A falha do `CoreApplication` é logada pelo canal `twinapi`
+do **próprio Wine** (`activation_factory_QueryInterface ... not
+implemented`) — ou seja, já não é uma lacuna do nosso shim de Composition,
+é um gap num componente Wine completamente diferente
+(`Windows.ApplicationModel.Core`, não `Windows.UI.Composition`). Parou-se
+aqui deliberadamente em vez de perseguir esse novo subsistema — ver
+"O que falta" abaixo.
+
+## Bugs reais encontrados e corrigidos na sessão inicial
 
 Cada um foi individualmente reproduzido, corrigido, testado:
 
@@ -114,22 +181,61 @@ implementa, o processo que funcionou de forma fiável foi:
 
 ## O que falta (próximos passos, por ordem provável)
 
-1. **`ICompositionCapabilities` / `ICompositionCapabilitiesStatics`** —
-   já declaradas em `private.h` (GUIDs `8253353e-...` e `f7b7a86e-...`),
-   **ainda não implementadas** em `composition.c`, não firificado no
-   dispatcher de `main.c`, sem ficheiro `.reg`. Esta era a próxima peça em
-   falta identificada antes de se fazer a pausa para arrumar o git.
-2. Retomar o ciclo "corre com harness limpo → identifica próxima interface
-   em falta pelo mesmo método → implementa → testa" — é muito provável que
-   existam mais interfaces WinRT em falta depois de `CompositionCapabilities`,
-   dado o tamanho da superfície de API que o Teams usa.
-3. Confirmar visualmente (via `gnome-screenshot`, não `xwd` — está bloqueado
+1. **`Windows.ApplicationModel.Core.CoreApplication`** — é a próxima
+   `RoGetActivationFactory` que falha (GUID pedido:
+   `0aacf7a4-5e1d-49df-8034-fb6a68bc5ed1`), mas desta vez a falha é dentro
+   do `twinapi.dll` do **próprio Wine**, não do nosso shim
+   `appxdeploymentclient.dll`. Antes de mexer aqui: não é óbvio ainda que
+   esta falha específica seja a causa do crash seguinte (há várias outras
+   `RoGetActivationFactory`/probes entre ela e a exceção não tratada no log
+   — `Microsoft.Graphics.Canvas.CanvasDevice`, `Windows.Foundation.PropertyValue`
+   — que também podem ser candidatas). Antes de continuar o ciclo de
+   debugging, vale a pena repetir a técnica do backtrace via `winedbg`
+   (FIFO + `c` + poll por "Unhandled exception" + `bt`, documentada abaixo)
+   para confirmar QUAL das três é mesmo a causa, em vez de assumir que é a
+   primeira a aparecer no log.
+2. Isto pode ser um projeto maior do que o shim de Composition: implementar
+   `Windows.ApplicationModel.Core.CoreApplication` a sério provavelmente
+   vive melhor como um patch a `dlls/twinapi.appcore/` (ou onde estiver essa
+   classe registada no Wine) do que dentro de `appxdeploymentclient.dll` —
+   avaliar isso antes de começar a escrever código.
+3. Continuar o ciclo "corre com harness limpo → identifica próxima interface
+   em falta pelo mesmo método → implementa → testa" — há seguramente mais
+   interfaces WinRT em falta depois desta, dado o tamanho da superfície de
+   API que o Teams usa.
+4. Confirmar visualmente (via `gnome-screenshot`, não `xwd` — está bloqueado
    pelo Wayland/XWrayland) que a janela do Teams aparece e desenha conteúdo
-   real depois de cada correção.
-4. Eventualmente considerar submeter as correções genéricas do Wine (não
+   real depois de cada correção — ainda não foi feito nesta ronda (o foco
+   foi só em avançar o ponto de crash).
+5. Eventualmente considerar submeter as correções genéricas do Wine (não
    ligadas ao shim AppX) upstream para o wine-mirror, já que corrigem bugs
    reais não relacionados com Teams especificamente (locale POSIX, ordinais
    shlwapi, `WerGetFlags`, etc.).
+
+### Nota sobre a técnica de backtrace via winedbg (nova nesta ronda)
+
+Além da metodologia já documentada (radare2 + extração manual de GUID),
+esta ronda também precisou de apanhar o backtrace COMPLETO no momento exato
+da exceção, não só o endereço onde ela acontece. `winedbg` só aceita
+comandos via stdin quando está mesmo parado (por omissão fica a correr
+livremente depois de lançar o processo, `c` inclusive é preciso mandar
+manualmente se ele parar num breakpoint automático inicial no loader). A
+forma fiável de o fazer:
+
+```bash
+FIFO=/tmp/wdbg.fifo; mkfifo "$FIFO"
+( timeout 100 winedbg "C:\\MSTeams\\ms-teams.exe" < "$FIFO" > crash.log 2>&1 ) &
+exec 3>"$FIFO"
+printf 'c\n' >&3                      # deixa correr
+# espera a exceção aparecer no log, só DEPOIS manda o bt:
+while ! grep -q "Unhandled exception" crash.log; do sleep 1; done
+sleep 1; printf 'bt\nquit\n' >&3
+wait
+```
+
+Mandar `bt` demasiado cedo (por exemplo, sem esperar por `c` ter feito
+efeito) só mostra a stack do loader inicial (`LdrInitializeThunk`), que é
+inútil.
 
 ## Notas sobre este commit
 
