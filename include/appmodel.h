@@ -124,6 +124,23 @@ typedef struct PACKAGE_ID
 }
 PACKAGE_ID;
 
+typedef struct PACKAGE_INFO
+{
+    UINT32     reserved;
+    UINT32     flags;
+    WCHAR      *path;
+    WCHAR      *packageFullName;
+    WCHAR      *packageFamilyName;
+    PACKAGE_ID packageId;
+}
+PACKAGE_INFO;
+
+typedef struct _PACKAGE_INFO_REFERENCE
+{
+    void *reserved;
+}
+*PACKAGE_INFO_REFERENCE;
+
 LONG WINAPI AppPolicyGetMediaFoundationCodecLoading(HANDLE token, AppPolicyMediaFoundationCodecLoading *policy);
 LONG WINAPI AppPolicyGetProcessTerminationMethod(HANDLE token, AppPolicyProcessTerminationMethod *policy);
 LONG WINAPI AppPolicyGetShowDeveloperDiagnostic(HANDLE token, AppPolicyShowDeveloperDiagnostic *policy);
@@ -131,6 +148,48 @@ LONG WINAPI AppPolicyGetThreadInitializationType(HANDLE token, AppPolicyThreadIn
 LONG WINAPI AppPolicyGetWindowingModel(HANDLE processToken, AppPolicyWindowingModel *policy);
 LONG WINAPI PackageFullNameFromId(const PACKAGE_ID *id, UINT32 *name_length, WCHAR *name);
 LONG WINAPI PackageIdFromFullName(const WCHAR *full_name, UINT32 flags, UINT32 *buffer_length, BYTE *buffer);
+LONG WINAPI OpenPackageInfoByFullName(const WCHAR *full_name, UINT32 reserved, PACKAGE_INFO_REFERENCE *info_reference);
+LONG WINAPI ClosePackageInfo(PACKAGE_INFO_REFERENCE info_reference);
+LONG WINAPI GetPackageInfo(PACKAGE_INFO_REFERENCE info_reference, UINT32 flags, UINT32 *buffer_length, BYTE *buffer, UINT32 *count);
+LONG WINAPI VerifyPackageFamilyName(const WCHAR *package_family_name);
+LONG WINAPI FindPackagesByPackageFamily(const WCHAR *package_family_name, UINT32 package_filters,
+    UINT32 *count, WCHAR **package_full_names, UINT32 *buffer_length, WCHAR *buffer, UINT32 *package_properties);
+LONG WINAPI FormatApplicationUserModelId(const WCHAR *package_family_name, const WCHAR *package_relative_app_id,
+                                          UINT32 *application_user_model_id_length, WCHAR *application_user_model_id);
+
+/* Dynamic Dependencies (Windows 10 1809+ / Windows App SDK bootstrap) */
+typedef UINT32 PackageDependencyProcessorArchitectures;
+typedef INT32 PackageDependencyLifetimeKind;
+typedef UINT32 CreatePackageDependencyOptions;
+#define CreatePackageDependencyOptions_None 0
+#define CreatePackageDependencyOptions_ScopeIsSystem 2
+#define CreatePackageDependencyOptions_DoNotVerifyDependencyResolution 1
+typedef UINT32 AddPackageDependencyOptions;
+typedef UINT32 AddPackageDependencyOptions2;
+
+typedef struct PACKAGEDEPENDENCY_CONTEXT__ { void *unused; } *PACKAGEDEPENDENCY_CONTEXT;
+
+HRESULT WINAPI TryCreatePackageDependency(void *user, const WCHAR *package_family_name, PACKAGE_VERSION min_version,
+    PackageDependencyProcessorArchitectures architectures, PackageDependencyLifetimeKind lifetime_kind,
+    const WCHAR *lifetime_artifact, CreatePackageDependencyOptions options, WCHAR **package_dependency_id);
+HRESULT WINAPI TryCreatePackageDependency2(void *user, const WCHAR *package_family_name, PACKAGE_VERSION min_version,
+    PackageDependencyProcessorArchitectures architectures, PackageDependencyLifetimeKind lifetime_kind,
+    const WCHAR *lifetime_artifact, CreatePackageDependencyOptions options, const FILETIME *lifetime_expiration,
+    WCHAR **package_dependency_id);
+HRESULT WINAPI DeletePackageDependency(const WCHAR *package_dependency_id);
+HRESULT WINAPI AddPackageDependency(const WCHAR *package_dependency_id, INT32 rank, AddPackageDependencyOptions options,
+    PACKAGEDEPENDENCY_CONTEXT *package_dependency_context, WCHAR **package_full_name);
+HRESULT WINAPI AddPackageDependency2(const WCHAR *package_dependency_id, INT32 rank, AddPackageDependencyOptions2 options,
+    PACKAGEDEPENDENCY_CONTEXT *package_dependency_context, WCHAR **package_full_name);
+HRESULT WINAPI RemovePackageDependency(PACKAGEDEPENDENCY_CONTEXT package_dependency_context);
+HRESULT WINAPI GetResolvedPackageFullNameForPackageDependency(const WCHAR *package_dependency_id, WCHAR **package_full_name);
+HRESULT WINAPI GetResolvedPackageFullNameForPackageDependency2(const WCHAR *package_dependency_id, WCHAR **package_full_name);
+HRESULT WINAPI GetIdForPackageDependencyContext(PACKAGEDEPENDENCY_CONTEXT package_dependency_context, WCHAR **package_dependency_id);
+UINT32 WINAPI GetPackageGraphRevisionId(void);
+
+typedef INT32 PackagePathType;
+LONG WINAPI GetCurrentPackageInfo2(UINT32 flags, PackagePathType path_type, UINT32 *buffer_length, BYTE *buffer, UINT32 *count);
+LONG WINAPI GetCurrentPackageInfo3(UINT32 flags, PackagePathType path_type, UINT32 *buffer_length, BYTE *buffer, UINT32 *count);
 
 #if defined(__cplusplus)
 }

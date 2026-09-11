@@ -203,6 +203,23 @@ void WINAPI DECLSPEC_HOTPATCH OutputDebugStringA( LPCSTR str )
     __ENDTRY
     if (caught_by_dbg) return;
 
+    /* for some unknown reason Windows sends the exception a second time, if a
+     * debugger is attached, and the event wasn't handled in the first attempt */
+    if (NtCurrentTeb()->Peb->BeingDebugged)
+    {
+        __TRY
+        {
+            ULONG_PTR args[2];
+            args[0] = strlen(str) + 1;
+            args[1] = (ULONG_PTR)str;
+            RaiseException( DBG_PRINTEXCEPTION_C, 0, 2, args );
+        }
+        __EXCEPT(debug_exception_handler)
+        {
+        }
+        __ENDTRY
+    }
+
     /* send string to a system-wide monitor */
     if (!mutex_inited)
     {
@@ -647,6 +664,7 @@ static BOOL start_debugger( EXCEPTION_POINTERS *epointers, HANDLE event )
     TRACE( "Starting debugger %s\n", debugstr_w(cmdline) );
     memset( &startup, 0, sizeof(startup) );
     startup.cb = sizeof(startup);
+    startup.lpDesktop = (WCHAR*)L"WinSta0";
     startup.dwFlags = STARTF_USESHOWWINDOW;
     startup.wShowWindow = SW_SHOWNORMAL;
     ret = CreateProcessW( NULL, cmdline, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, env, NULL, &startup, &info );
@@ -796,7 +814,11 @@ LONG WINAPI UnhandledExceptionFilter( EXCEPTION_POINTERS *epointers )
 HRESULT WINAPI /* DECLSPEC_HOTPATCH */ WerGetFlags( HANDLE process, DWORD *flags )
 {
     FIXME( "(%p, %p) stub\n", process, flags );
-    return E_NOTIMPL;
+    /* Real Windows practically always succeeds here (WER is always present);
+     * some apps don't check the HRESULT before reading *flags, so fail
+     * gracefully with a benign default instead of leaving it uninitialized. */
+    if (flags) *flags = 0;
+    return S_OK;
 }
 
 
@@ -806,6 +828,16 @@ HRESULT WINAPI /* DECLSPEC_HOTPATCH */ WerGetFlags( HANDLE process, DWORD *flags
 HRESULT WINAPI /* DECLSPEC_HOTPATCH */ WerRegisterCustomMetadata( const WCHAR *key, const WCHAR *value )
 {
     FIXME( "(%s, %s) stub\n", debugstr_w(key), debugstr_w(value) );
+    return S_OK;
+}
+
+
+/***********************************************************************
+ *         WerRegisterAdditionalProcess   (kernelbase.@)
+ */
+HRESULT WINAPI /* DECLSPEC_HOTPATCH */ WerRegisterAdditionalProcess( DWORD process_id, DWORD flags )
+{
+    FIXME( "(%lu, %#lx) stub\n", process_id, flags );
     return S_OK;
 }
 

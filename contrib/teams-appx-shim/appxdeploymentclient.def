@@ -1,0 +1,5 @@
+LIBRARY appxdeploymentclient.dll
+EXPORTS
+    DllGetActivationFactory
+    DllGetClassObject
+    DllCanUnloadNow

@@ -138,7 +138,7 @@
 @ stdcall ClearCommError(long ptr ptr)
 # @ stub CloseGlobalizationUserSettingsKey
 @ stdcall CloseHandle(long)
-# @ stub ClosePackageInfo
+@ stdcall ClosePackageInfo(ptr)
 # @ stub ClosePrivateNamespace
 @ stdcall ClosePseudoConsole(ptr)
 # @ stub CloseState
@@ -380,7 +380,7 @@
 @ stdcall FindNextFileW(long ptr)
 @ stdcall FindNextStreamW(long ptr)
 @ stdcall FindNextVolumeW(long ptr long)
-# @ stub FindPackagesByPackageFamily
+@ stdcall FindPackagesByPackageFamily(wstr long ptr ptr ptr ptr ptr)
 @ stdcall FindResourceExW(long wstr wstr long)
 @ stdcall FindResourceW(long wstr wstr)
 @ stdcall FindStringOrdinal(long wstr long wstr long long)
@@ -396,7 +396,7 @@
 @ stdcall FlushViewOfFile(ptr long)
 @ stdcall FoldStringW(long wstr long ptr long)
 # @ stub ForceSyncFgPolicyInternal
-# @ stub FormatApplicationUserModelId
+@ stdcall FormatApplicationUserModelId(wstr wstr ptr ptr)
 @ stdcall FormatMessageA(long ptr long long ptr long ptr)
 @ stdcall FormatMessageW(long ptr long long ptr long ptr)
 @ stdcall FreeConsole()
@@ -634,7 +634,7 @@
 @ stdcall GetPackageFullName(long ptr ptr)
 # @ stub GetPackageFullNameFromToken
 # @ stub GetPackageId
-# @ stub GetPackageInfo
+@ stdcall GetPackageInfo(ptr long ptr ptr ptr)
 # @ stub GetPackageInstallTime
 # @ stub GetPackageOSMaxVersionTested
 # @ stub GetPackagePath
@@ -1031,7 +1031,19 @@
 @ stdcall OpenFileMappingW(long long wstr)
 # @ stub OpenGlobalizationUserSettingsKey
 @ stdcall OpenMutexW(long long wstr)
-# @ stub OpenPackageInfoByFullName
+@ stdcall OpenPackageInfoByFullName(wstr long ptr)
+@ stdcall TryCreatePackageDependency(ptr wstr int64 long long wstr long ptr)
+@ stdcall TryCreatePackageDependency2(ptr wstr int64 long long wstr long ptr ptr)
+@ stdcall DeletePackageDependency(wstr)
+@ stdcall AddPackageDependency(wstr long long ptr ptr)
+@ stdcall AddPackageDependency2(wstr long long ptr ptr)
+@ stdcall RemovePackageDependency(ptr)
+@ stdcall GetResolvedPackageFullNameForPackageDependency(wstr ptr)
+@ stdcall GetResolvedPackageFullNameForPackageDependency2(wstr ptr)
+@ stdcall GetIdForPackageDependencyContext(ptr ptr)
+@ stdcall GetPackageGraphRevisionId()
+@ stdcall GetCurrentPackageInfo2(long long ptr ptr ptr)
+@ stdcall GetCurrentPackageInfo3(long long ptr ptr ptr)
 # @ stub OpenPackageInfoByFullNameForUser
 # @ stub OpenPrivateNamespaceW
 @ stdcall OpenProcess(long long long)
@@ -1715,7 +1727,7 @@
 @ stdcall VerQueryValueW(ptr wstr ptr ptr)
 @ stdcall -ret64 VerSetConditionMask(long long long long) ntdll.VerSetConditionMask
 # @ stub VerifyApplicationUserModelId
-# @ stub VerifyPackageFamilyName
+@ stdcall VerifyPackageFamilyName(wstr)
 # @ stub VerifyPackageFullName
 # @ stub VerifyPackageId
 # @ stub VerifyPackageRelativeApplicationId
@@ -1758,6 +1770,7 @@
 @ stdcall WakeConditionVariable(ptr) ntdll.RtlWakeConditionVariable
 @ stdcall WerGetFlags(ptr ptr)
 @ stdcall WerRegisterCustomMetadata(wstr wstr)
+@ stdcall WerRegisterAdditionalProcess(long long)
 @ stdcall WerRegisterFile(wstr long long)
 @ stdcall WerRegisterMemoryBlock(ptr long)
 @ stdcall WerRegisterRuntimeExceptionModule(wstr ptr)

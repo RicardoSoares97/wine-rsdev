@@ -2706,7 +2706,12 @@ void __RPC_USER ATSVC_HANDLE_unbind(ATSVC_HANDLE ServerName, handle_t rpc_handle
 HRESULT WINAPI NetGetAadJoinInformation(LPCWSTR tenant_id, PDSREG_JOIN_INFO *join_info)
 {
     FIXME("(%s, %p): stub\n", debugstr_w(tenant_id), join_info);
-    return ERROR_CALL_NOT_IMPLEMENTED;
+    /* Must return a HRESULT with the failure bit set: this used to return
+     * the bare Win32 error code, which callers using SUCCEEDED() saw as
+     * success (0x78 has no high bit) and went on to use *join_info
+     * uninitialized. */
+    if (join_info) *join_info = NULL;
+    return HRESULT_FROM_WIN32( ERROR_CALL_NOT_IMPLEMENTED );
 }
 
 void NET_API_FUNCTION NetFreeAadJoinInformation(DSREG_JOIN_INFO *join_info)

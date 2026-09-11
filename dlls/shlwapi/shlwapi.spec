@@ -220,8 +220,6 @@
 220 stdcall -noname SHSetDefaultDialogFont(ptr long)
 221 stdcall -noname SHRemoveDefaultDialogFont(ptr)
 222 stdcall -noname SHGlobalCounterCreate(long)
-223 stdcall -noname SHGlobalCounterGetValue(long)
-224 stdcall -noname SHGlobalCounterIncrement(long)
 225 stdcall -ordinal SHStripMneumonicW(wstr)
 226 stub -noname ZoneCheckPathA
 227 stub -noname ZoneCheckPathW
@@ -421,7 +419,6 @@
 421 stub -noname SHLoadPersistedDataObject
 422 stdcall -noname SHGlobalCounterCreateNamedA(str long)
 423 stdcall -noname SHGlobalCounterCreateNamedW(wstr long)
-424 stdcall -noname SHGlobalCounterDecrement(long)
 425 stdcall -noname DeleteMenuWrap(ptr long long) user32.DeleteMenu
 426 stdcall -noname DestroyMenuWrap(long) user32.DestroyMenu
 427 stdcall -noname TrackPopupMenuWrap(long long long long long long ptr) user32.TrackPopupMenu
@@ -630,6 +627,9 @@
 @ stdcall PathIsSystemFolderA(str long)
 @ stdcall PathIsSystemFolderW(wstr long)
 @ stdcall -import PathIsUNCA(str)
+632 stdcall -noname SHGlobalCounterGetValue(long)
+633 stdcall -noname SHGlobalCounterIncrement(long)
+634 stdcall -noname SHGlobalCounterDecrement(long)
 @ stdcall -import PathIsUNCServerA(str)
 @ stdcall -import PathIsUNCServerShareA(str)
 @ stdcall -import PathIsUNCServerShareW(wstr)

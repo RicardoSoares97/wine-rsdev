@@ -580,6 +580,20 @@ static int compare_locale_names( const WCHAR *n1, const WCHAR *n2 )
 static const NLS_LOCALE_LCNAME_INDEX *find_lcname_entry( const WCHAR *name )
 {
     int min = 0, max = locale_table->nb_lcnames - 1;
+    WCHAR stripped[LOCALE_NAME_MAX_LENGTH];
+    const WCHAR *dot;
+
+    /* compare_locale_names() already treats '_' as '-', but apps built for
+     * POSIX environments (e.g. cross-platform code in ms-teams.exe) can pass
+     * a full POSIX locale name including a ".codeset" suffix, such as
+     * "en_US.UTF-8". Strip that suffix before doing the lookup, since none
+     * of the NLS locale name table entries include a codeset. */
+    if ((dot = wcschr( name, '.' )) && dot - name < LOCALE_NAME_MAX_LENGTH)
+    {
+        memcpy( stripped, name, (dot - name) * sizeof(WCHAR) );
+        stripped[dot - name] = 0;
+        name = stripped;
+    }
 
     while (min <= max)
     {

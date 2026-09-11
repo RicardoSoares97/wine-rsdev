@@ -1,0 +1,5 @@
+REGEDIT4
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\WindowsRuntime\ActivatableClassId\Windows.Management.Deployment.StagePackageOptions]
+"DllPath"="C:\\windows\\system32\\appxdeploymentclient.dll"
+"ThreadingModel"=dword:00000001

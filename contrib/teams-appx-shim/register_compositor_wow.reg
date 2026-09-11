@@ -1,0 +1,4 @@
+REGEDIT4
+
+[HKEY_LOCAL_MACHINE\Software\WOW6432Node\Microsoft\WindowsRuntime\ActivatableClassId\Windows.UI.Composition.Compositor]
+"DllPath"="C:\\windows\\system32\\appxdeploymentclient.dll"

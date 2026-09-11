@@ -36,6 +36,7 @@
 #include "winnls.h"
 #include "winternl.h"
 #include "winerror.h"
+#include "winreg.h"
 #include "appmodel.h"
 
 #include "kernelbase.h"
@@ -1854,4 +1855,461 @@ LONG WINAPI PackageFullNameFromId(const PACKAGE_ID *id, UINT32 *length, WCHAR *b
     *length = len + 1;
 
     return ERROR_SUCCESS;
+}
+
+#define WINE_APPX_PACKAGES_KEY L"Software\\Wine\\FakeAppxPackages"
+
+/* shared by FindPackagesByPackageFamily: collects the full names of every
+ * package in our tiny registry-based database whose FamilyName matches.
+ * Returns the number of matches found (capped to max_matches). */
+static UINT32 find_packages_by_family( const WCHAR *family_name, WCHAR (*matches)[900], UINT32 max_matches )
+{
+    HKEY root;
+    UINT32 match_count = 0;
+    DWORD index;
+
+    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, WINE_APPX_PACKAGES_KEY, 0, KEY_READ, &root ))
+        return 0;
+
+    for (index = 0; match_count < max_matches; index++)
+    {
+        WCHAR subkey[256];
+        DWORD subkey_len = ARRAY_SIZE(subkey);
+        HKEY pkg_key;
+        WCHAR family[300];
+        DWORD size;
+
+        if (RegEnumKeyExW( root, index, subkey, &subkey_len, NULL, NULL, NULL, NULL )) break;
+        if (RegOpenKeyExW( root, subkey, 0, KEY_READ, &pkg_key )) continue;
+
+        size = sizeof(family);
+        if (!RegQueryValueExW( pkg_key, L"FamilyName", NULL, NULL, (BYTE *)family, &size ) &&
+            !wcsicmp( family, family_name ))
+        {
+            wcsncpy( matches[match_count], subkey, 899 );
+            matches[match_count][899] = 0;
+            match_count++;
+        }
+        RegCloseKey( pkg_key );
+    }
+    RegCloseKey( root );
+    return match_count;
+}
+
+/***********************************************************************
+ *         FindPackagesByPackageFamily   (kernelbase.@)
+ */
+LONG WINAPI DECLSPEC_HOTPATCH FindPackagesByPackageFamily( const WCHAR *package_family_name, UINT32 package_filters,
+    UINT32 *count, WCHAR **package_full_names, UINT32 *buffer_length, WCHAR *buffer, UINT32 *package_properties )
+{
+    WCHAR matches[16][900];
+    UINT32 match_count, needed_chars = 0, i;
+
+    TRACE( "(%s %#x %p %p %p %p %p)\n", debugstr_w(package_family_name), package_filters,
+           count, package_full_names, buffer_length, buffer, package_properties );
+
+    if (!count || !buffer_length) return ERROR_INVALID_PARAMETER;
+
+    match_count = package_family_name ? find_packages_by_family( package_family_name, matches, ARRAY_SIZE(matches) ) : 0;
+    for (i = 0; i < match_count; i++) needed_chars += wcslen( matches[i] ) + 1;
+
+    if (*count < match_count || *buffer_length < needed_chars || (match_count && (!package_full_names || !buffer)))
+    {
+        *count = match_count;
+        *buffer_length = needed_chars;
+        return match_count ? ERROR_INSUFFICIENT_BUFFER : ERROR_SUCCESS;
+    }
+
+    {
+        WCHAR *p = buffer;
+        for (i = 0; i < match_count; i++)
+        {
+            UINT32 len = wcslen( matches[i] ) + 1;
+            memcpy( p, matches[i], len * sizeof(WCHAR) );
+            package_full_names[i] = p;
+            if (package_properties) package_properties[i] = 0;
+            p += len;
+        }
+    }
+    *count = match_count;
+    *buffer_length = needed_chars;
+    return ERROR_SUCCESS;
+}
+
+/* Minimal real "package info" support, backed by a small registry-based
+ * package database at HKLM\Software\Wine\FakeAppxPackages\<full name>,
+ * populated by MSIX-installing applications (e.g. an AppX PackageManager
+ * implementation) that record what they deployed. Without such an entry,
+ * these functions behave exactly like the stubs above (no package found). */
+
+struct package_info_ref
+{
+    WCHAR path[MAX_PATH];
+    WCHAR full_name[900];
+    WCHAR family_name[300];
+    WCHAR name[256];
+    WCHAR publisher[512];
+    WCHAR resource_id[64];
+    UINT32 processor_architecture;
+    PACKAGE_VERSION version;
+};
+
+static UINT32 arch_string_to_code( const WCHAR *arch )
+{
+    if (!wcsicmp( arch, L"x64" )) return 9;
+    if (!wcsicmp( arch, L"x86" )) return 0;
+    if (!wcsicmp( arch, L"arm64" )) return 12;
+    if (!wcsicmp( arch, L"arm" )) return 5;
+    return 11; /* neutral */
+}
+
+/***********************************************************************
+ *         OpenPackageInfoByFullName   (kernelbase.@)
+ */
+LONG WINAPI OpenPackageInfoByFullName( const WCHAR *full_name, UINT32 reserved, PACKAGE_INFO_REFERENCE *info_reference )
+{
+    HKEY root, pkg_key;
+    struct package_info_ref *ref;
+    LONG res;
+
+    TRACE( "(%s %#x %p)\n", debugstr_w(full_name), reserved, info_reference );
+
+    *info_reference = NULL;
+
+    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, WINE_APPX_PACKAGES_KEY, 0, KEY_READ, &root ))
+        return APPMODEL_ERROR_NO_PACKAGE;
+    res = RegOpenKeyExW( root, full_name, 0, KEY_READ, &pkg_key );
+    RegCloseKey( root );
+    if (res) return APPMODEL_ERROR_NO_PACKAGE;
+
+    if (!(ref = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*ref) )))
+    {
+        RegCloseKey( pkg_key );
+        return ERROR_OUTOFMEMORY;
+    }
+
+    {
+        DWORD size;
+        UINT64 version_packed = 0;
+        WCHAR arch[32] = {0};
+
+        size = sizeof(ref->path); RegQueryValueExW( pkg_key, L"Path", NULL, NULL, (BYTE *)ref->path, &size );
+        size = sizeof(ref->family_name); RegQueryValueExW( pkg_key, L"FamilyName", NULL, NULL, (BYTE *)ref->family_name, &size );
+        size = sizeof(ref->name); RegQueryValueExW( pkg_key, L"Name", NULL, NULL, (BYTE *)ref->name, &size );
+        size = sizeof(ref->publisher); RegQueryValueExW( pkg_key, L"Publisher", NULL, NULL, (BYTE *)ref->publisher, &size );
+        size = sizeof(ref->resource_id); RegQueryValueExW( pkg_key, L"ResourceId", NULL, NULL, (BYTE *)ref->resource_id, &size );
+        size = sizeof(version_packed); RegQueryValueExW( pkg_key, L"Version", NULL, NULL, (BYTE *)&version_packed, &size );
+        ref->version.Version = version_packed;
+        size = sizeof(arch); RegQueryValueExW( pkg_key, L"Architecture", NULL, NULL, (BYTE *)arch, &size );
+        ref->processor_architecture = arch_string_to_code( arch );
+        wcsncpy( ref->full_name, full_name, ARRAY_SIZE(ref->full_name) - 1 );
+    }
+    RegCloseKey( pkg_key );
+
+    *info_reference = (PACKAGE_INFO_REFERENCE)ref;
+    return ERROR_SUCCESS;
+}
+
+/***********************************************************************
+ *         ClosePackageInfo   (kernelbase.@)
+ */
+LONG WINAPI ClosePackageInfo( PACKAGE_INFO_REFERENCE info_reference )
+{
+    TRACE( "(%p)\n", info_reference );
+    HeapFree( GetProcessHeap(), 0, info_reference );
+    return ERROR_SUCCESS;
+}
+
+/***********************************************************************
+ *         GetPackageInfo   (kernelbase.@)
+ */
+LONG WINAPI GetPackageInfo( PACKAGE_INFO_REFERENCE info_reference, UINT32 flags, UINT32 *buffer_length, BYTE *buffer, UINT32 *count )
+{
+    struct package_info_ref *ref = (struct package_info_ref *)info_reference;
+    UINT32 needed;
+
+    TRACE( "(%p %#x %p %p %p)\n", info_reference, flags, buffer_length, buffer, count );
+
+    if (!ref || !buffer_length) return ERROR_INVALID_PARAMETER;
+
+    needed = sizeof(PACKAGE_INFO);
+    needed += (wcslen( ref->path ) + 1) * sizeof(WCHAR);
+    needed += (wcslen( ref->full_name ) + 1) * sizeof(WCHAR);
+    needed += (wcslen( ref->family_name ) + 1) * sizeof(WCHAR);
+    needed += (wcslen( ref->name ) + 1) * sizeof(WCHAR);
+    needed += (wcslen( ref->publisher ) + 1) * sizeof(WCHAR);
+    needed += (wcslen( ref->resource_id ) + 1) * sizeof(WCHAR);
+
+    if (count) *count = 1;
+
+    if (!buffer || *buffer_length < needed)
+    {
+        *buffer_length = needed;
+        return buffer ? ERROR_INSUFFICIENT_BUFFER : ERROR_SUCCESS;
+    }
+    *buffer_length = needed;
+
+    {
+        PACKAGE_INFO *info = (PACKAGE_INFO *)buffer;
+        WCHAR *pool = (WCHAR *)(buffer + sizeof(PACKAGE_INFO));
+        size_t off = 0;
+
+        memset( info, 0, sizeof(*info) );
+#define PACK(dst, src) do { wcscpy( pool + off, (src) ); (dst) = pool + off; off += wcslen( (src) ) + 1; } while (0)
+        PACK( info->path, ref->path );
+        PACK( info->packageFullName, ref->full_name );
+        PACK( info->packageFamilyName, ref->family_name );
+        info->packageId.processorArchitecture = ref->processor_architecture;
+        info->packageId.version = ref->version;
+        PACK( info->packageId.name, ref->name );
+        PACK( info->packageId.publisher, ref->publisher );
+        PACK( info->packageId.resourceId, ref->resource_id );
+        info->packageId.publisherId = NULL;
+#undef PACK
+    }
+    return ERROR_SUCCESS;
+}
+
+/***********************************************************************
+ *         VerifyPackageFamilyName   (kernelbase.@)
+ */
+LONG WINAPI VerifyPackageFamilyName( const WCHAR *package_family_name )
+{
+    size_t len;
+
+    TRACE( "(%s)\n", debugstr_w(package_family_name) );
+
+    if (!package_family_name) return ERROR_INVALID_PARAMETER;
+    len = wcslen( package_family_name );
+    if (len < PACKAGE_FAMILY_NAME_MIN_LENGTH || len > PACKAGE_FAMILY_NAME_MAX_LENGTH)
+        return ERROR_INVALID_PARAMETER;
+    return ERROR_SUCCESS;
+}
+
+/***********************************************************************
+ *         FormatApplicationUserModelId   (kernelbase.@)
+ */
+LONG WINAPI FormatApplicationUserModelId( const WCHAR *package_family_name, const WCHAR *package_relative_app_id,
+                                           UINT32 *application_user_model_id_length, WCHAR *application_user_model_id )
+{
+    WCHAR buf[APPLICATION_USER_MODEL_ID_MAX_LENGTH];
+    UINT32 needed;
+
+    TRACE( "(%s %s %p %p)\n", debugstr_w(package_family_name), debugstr_w(package_relative_app_id),
+           application_user_model_id_length, application_user_model_id );
+
+    if (!package_family_name || !package_relative_app_id || !application_user_model_id_length)
+        return ERROR_INVALID_PARAMETER;
+
+    swprintf( buf, ARRAY_SIZE(buf), L"%s!%s", package_family_name, package_relative_app_id );
+    needed = (wcslen( buf ) + 1) * sizeof(WCHAR);
+
+    if (!application_user_model_id || *application_user_model_id_length < needed)
+    {
+        *application_user_model_id_length = needed;
+        return application_user_model_id ? ERROR_INSUFFICIENT_BUFFER : ERROR_SUCCESS;
+    }
+    *application_user_model_id_length = needed;
+    wcscpy( application_user_model_id, buf );
+    return ERROR_SUCCESS;
+}
+
+/* ============================================================
+ * Dynamic Dependencies (Windows 10 1809+ / Windows App SDK bootstrap).
+ * A "package dependency id" is just the package family name here: our
+ * registry-based package DB is keyed by full name, and FindPackagesByPackageFamily
+ * -style lookups walk it by family name, so using the family name directly as
+ * the id keeps this minimal implementation self-consistent without needing a
+ * separate persisted "dependency" object.
+ */
+
+static WCHAR *heap_strdupW( const WCHAR *str )
+{
+    WCHAR *ret;
+    if (!str) return NULL;
+    if ((ret = HeapAlloc( GetProcessHeap(), 0, (wcslen(str) + 1) * sizeof(WCHAR) )))
+        wcscpy( ret, str );
+    return ret;
+}
+
+/* looks up a package by family name in our registry DB, returns its full name (heap-allocated) or NULL */
+static WCHAR *resolve_family_to_full_name( const WCHAR *family_name )
+{
+    HKEY root, subkey;
+    WCHAR *result = NULL;
+    DWORD index;
+
+    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, WINE_APPX_PACKAGES_KEY, 0, KEY_READ, &root ))
+        return NULL;
+
+    for (index = 0; !result; index++)
+    {
+        WCHAR name[900];
+        DWORD name_len = ARRAY_SIZE(name);
+        WCHAR family[300] = {0};
+        DWORD size;
+
+        if (RegEnumKeyExW( root, index, name, &name_len, NULL, NULL, NULL, NULL )) break;
+        if (RegOpenKeyExW( root, name, 0, KEY_READ, &subkey )) continue;
+        size = sizeof(family);
+        RegQueryValueExW( subkey, L"FamilyName", NULL, NULL, (BYTE *)family, &size );
+        RegCloseKey( subkey );
+        if (!wcsicmp( family, family_name )) result = heap_strdupW( name );
+    }
+    RegCloseKey( root );
+    return result;
+}
+
+/***********************************************************************
+ *         TryCreatePackageDependency   (kernelbase.@)
+ */
+HRESULT WINAPI TryCreatePackageDependency( void *user, const WCHAR *package_family_name, PACKAGE_VERSION min_version,
+    PackageDependencyProcessorArchitectures architectures, PackageDependencyLifetimeKind lifetime_kind,
+    const WCHAR *lifetime_artifact, CreatePackageDependencyOptions options, WCHAR **package_dependency_id )
+{
+    WCHAR *full_name;
+
+    TRACE( "(%p %s %#I64x %#x %d %s %#x %p)\n", user, debugstr_w(package_family_name), min_version.Version,
+           architectures, lifetime_kind, debugstr_w(lifetime_artifact), options, package_dependency_id );
+
+    if (!package_family_name || !package_dependency_id) return E_INVALIDARG;
+
+    full_name = resolve_family_to_full_name( package_family_name );
+    if (!full_name && !(options & CreatePackageDependencyOptions_DoNotVerifyDependencyResolution))
+        return HRESULT_FROM_WIN32( APPMODEL_ERROR_NO_PACKAGE );
+    HeapFree( GetProcessHeap(), 0, full_name );
+
+    if (!(*package_dependency_id = heap_strdupW( package_family_name ))) return E_OUTOFMEMORY;
+    return S_OK;
+}
+
+/***********************************************************************
+ *         TryCreatePackageDependency2   (kernelbase.@)
+ */
+HRESULT WINAPI TryCreatePackageDependency2( void *user, const WCHAR *package_family_name, PACKAGE_VERSION min_version,
+    PackageDependencyProcessorArchitectures architectures, PackageDependencyLifetimeKind lifetime_kind,
+    const WCHAR *lifetime_artifact, CreatePackageDependencyOptions options, const FILETIME *lifetime_expiration,
+    WCHAR **package_dependency_id )
+{
+    TRACE( "(%p %s ... %p)\n", user, debugstr_w(package_family_name), package_dependency_id );
+    return TryCreatePackageDependency( user, package_family_name, min_version, architectures, lifetime_kind,
+                                        lifetime_artifact, options, package_dependency_id );
+}
+
+/***********************************************************************
+ *         DeletePackageDependency   (kernelbase.@)
+ */
+HRESULT WINAPI DeletePackageDependency( const WCHAR *package_dependency_id )
+{
+    TRACE( "(%s)\n", debugstr_w(package_dependency_id) );
+    return S_OK;
+}
+
+/***********************************************************************
+ *         AddPackageDependency   (kernelbase.@)
+ */
+HRESULT WINAPI AddPackageDependency( const WCHAR *package_dependency_id, INT32 rank, AddPackageDependencyOptions options,
+    PACKAGEDEPENDENCY_CONTEXT *package_dependency_context, WCHAR **package_full_name )
+{
+    WCHAR *full_name;
+
+    TRACE( "(%s %d %#x %p %p)\n", debugstr_w(package_dependency_id), rank, options, package_dependency_context, package_full_name );
+
+    if (!package_dependency_id) return E_INVALIDARG;
+
+    full_name = resolve_family_to_full_name( package_dependency_id );
+    if (!full_name) return HRESULT_FROM_WIN32( APPMODEL_ERROR_NO_PACKAGE );
+
+    if (package_dependency_context)
+        *package_dependency_context = (PACKAGEDEPENDENCY_CONTEXT)heap_strdupW( package_dependency_id );
+    if (package_full_name) *package_full_name = full_name;
+    else HeapFree( GetProcessHeap(), 0, full_name );
+    return S_OK;
+}
+
+/***********************************************************************
+ *         AddPackageDependency2   (kernelbase.@)
+ */
+HRESULT WINAPI AddPackageDependency2( const WCHAR *package_dependency_id, INT32 rank, AddPackageDependencyOptions2 options,
+    PACKAGEDEPENDENCY_CONTEXT *package_dependency_context, WCHAR **package_full_name )
+{
+    TRACE( "(%s %d %#x %p %p)\n", debugstr_w(package_dependency_id), rank, options, package_dependency_context, package_full_name );
+    return AddPackageDependency( package_dependency_id, rank, options, package_dependency_context, package_full_name );
+}
+
+/***********************************************************************
+ *         RemovePackageDependency   (kernelbase.@)
+ */
+HRESULT WINAPI RemovePackageDependency( PACKAGEDEPENDENCY_CONTEXT package_dependency_context )
+{
+    TRACE( "(%p)\n", package_dependency_context );
+    HeapFree( GetProcessHeap(), 0, package_dependency_context );
+    return S_OK;
+}
+
+/***********************************************************************
+ *         GetResolvedPackageFullNameForPackageDependency   (kernelbase.@)
+ */
+HRESULT WINAPI GetResolvedPackageFullNameForPackageDependency( const WCHAR *package_dependency_id, WCHAR **package_full_name )
+{
+    TRACE( "(%s %p)\n", debugstr_w(package_dependency_id), package_full_name );
+    if (!package_dependency_id || !package_full_name) return E_INVALIDARG;
+    *package_full_name = resolve_family_to_full_name( package_dependency_id );
+    return *package_full_name ? S_OK : HRESULT_FROM_WIN32( APPMODEL_ERROR_NO_PACKAGE );
+}
+
+/***********************************************************************
+ *         GetResolvedPackageFullNameForPackageDependency2   (kernelbase.@)
+ */
+HRESULT WINAPI GetResolvedPackageFullNameForPackageDependency2( const WCHAR *package_dependency_id, WCHAR **package_full_name )
+{
+    return GetResolvedPackageFullNameForPackageDependency( package_dependency_id, package_full_name );
+}
+
+/***********************************************************************
+ *         GetIdForPackageDependencyContext   (kernelbase.@)
+ */
+HRESULT WINAPI GetIdForPackageDependencyContext( PACKAGEDEPENDENCY_CONTEXT package_dependency_context, WCHAR **package_dependency_id )
+{
+    TRACE( "(%p %p)\n", package_dependency_context, package_dependency_id );
+    if (!package_dependency_context || !package_dependency_id) return E_INVALIDARG;
+    if (!(*package_dependency_id = heap_strdupW( (const WCHAR *)package_dependency_context ))) return E_OUTOFMEMORY;
+    return S_OK;
+}
+
+/***********************************************************************
+ *         GetPackageGraphRevisionId   (kernelbase.@)
+ *
+ * Real Windows bumps this whenever the current process's package graph
+ * (its set of resolved dependencies) changes; callers use it purely to
+ * detect staleness of cached data. Since our package graph never changes
+ * within a process lifetime, a constant is a valid (if minimal) answer.
+ */
+UINT32 WINAPI GetPackageGraphRevisionId(void)
+{
+    TRACE( "()\n" );
+    return 1;
+}
+
+/***********************************************************************
+ *         GetCurrentPackageInfo2   (kernelbase.@)
+ *         GetCurrentPackageInfo3   (kernelbase.@)
+ *
+ * Newer variants of GetCurrentPackageInfo (adding a PackagePathType
+ * selector); undocumented signature for the "3" variant guessed from the
+ * established 1->2 pattern, low-risk because on this "no current package"
+ * path (ms-teams.exe always runs unpackaged here) real Windows would also
+ * return APPMODEL_ERROR_NO_PACKAGE without touching any output parameter,
+ * which is exactly what callers of a Win32 API must already tolerate.
+ */
+LONG WINAPI GetCurrentPackageInfo2( UINT32 flags, PackagePathType path_type, UINT32 *buffer_length, BYTE *buffer, UINT32 *count )
+{
+    FIXME( "(%#x %d %p %p %p): stub\n", flags, path_type, buffer_length, buffer, count );
+    return APPMODEL_ERROR_NO_PACKAGE;
+}
+
+LONG WINAPI GetCurrentPackageInfo3( UINT32 flags, PackagePathType path_type, UINT32 *buffer_length, BYTE *buffer, UINT32 *count )
+{
+    FIXME( "(%#x %d %p %p %p): stub\n", flags, path_type, buffer_length, buffer, count );
+    return APPMODEL_ERROR_NO_PACKAGE;
 }

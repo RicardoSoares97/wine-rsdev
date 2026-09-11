@@ -729,6 +729,7 @@
 @ stdcall RtlFreeActivationContextStack(ptr)
 @ stdcall RtlFreeAnsiString(ptr)
 @ stdcall RtlFreeHandle(ptr ptr)
+@ stdcall RtlDisownModuleHeapAllocation()
 @ stdcall RtlFreeHeap(long long ptr)
 @ stdcall RtlFreeOemString(ptr)
 # @ stub RtlFreeRangeList

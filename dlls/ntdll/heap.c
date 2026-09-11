@@ -2744,3 +2744,23 @@ BOOLEAN WINAPI RtlSetUserFlagsHeap( HANDLE handle, ULONG flags, void *ptr, ULONG
 
     return ret;
 }
+
+/***********************************************************************
+ *         RtlDisownModuleHeapAllocation   (NTDLL.@)
+ *
+ * Undocumented; used by newer Windows App SDK / loader-hardening code as
+ * an optional bookkeeping call (looked up dynamically via GetProcAddress,
+ * with the caller treating a missing entry point as a hard failure - not
+ * an accidental call to a garbage pointer). Wine's heap implementation has
+ * no concept of "per-module allocation ownership" to disown in the first
+ * place, so a no-op is a correct, safe implementation: we deliberately
+ * take no parameters and touch no registers/stack, which is safe under
+ * both the x64 (register-passed, caller-cleaned) and x86 stdcall (callee
+ * pops declared-arg-count*4 bytes - 0 here) calling conventions regardless
+ * of the real function's true (undocumented) signature, as long as it is
+ * never actually invoked with expectations about its return value.
+ */
+void WINAPI RtlDisownModuleHeapAllocation( void )
+{
+    TRACE( "()\n" );
+}

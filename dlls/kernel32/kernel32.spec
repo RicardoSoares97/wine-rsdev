@@ -514,6 +514,7 @@
 @ stdcall -import FindNextVolumeW(long ptr long)
 @ stdcall -import FindNLSString(long long wstr long wstr long ptr)
 @ stdcall -import FindNLSStringEx(wstr long wstr long wstr long ptr ptr ptr long)
+@ stdcall FindPackagesByPackageFamily(wstr long ptr ptr ptr ptr ptr) kernelbase.FindPackagesByPackageFamily
 @ stdcall FindResourceA(long str str)
 @ stdcall FindResourceExA(long str str long)
 @ stdcall -import FindResourceExW(long wstr wstr long)
@@ -642,6 +643,20 @@
 @ stdcall GetCurrentPackageId(ptr ptr) kernelbase.GetCurrentPackageId
 @ stdcall GetCurrentPackageInfo(long ptr ptr ptr) kernelbase.GetCurrentPackageInfo
 @ stdcall GetCurrentPackagePath(ptr ptr) kernelbase.GetCurrentPackagePath
+@ stdcall OpenPackageInfoByFullName(wstr long ptr) kernelbase.OpenPackageInfoByFullName
+@ stdcall TryCreatePackageDependency(ptr wstr int64 long long wstr long ptr) kernelbase.TryCreatePackageDependency
+@ stdcall TryCreatePackageDependency2(ptr wstr int64 long long wstr long ptr ptr) kernelbase.TryCreatePackageDependency2
+@ stdcall DeletePackageDependency(wstr) kernelbase.DeletePackageDependency
+@ stdcall AddPackageDependency(wstr long long ptr ptr) kernelbase.AddPackageDependency
+@ stdcall AddPackageDependency2(wstr long long ptr ptr) kernelbase.AddPackageDependency2
+@ stdcall RemovePackageDependency(ptr) kernelbase.RemovePackageDependency
+@ stdcall GetResolvedPackageFullNameForPackageDependency(wstr ptr) kernelbase.GetResolvedPackageFullNameForPackageDependency
+@ stdcall GetResolvedPackageFullNameForPackageDependency2(wstr ptr) kernelbase.GetResolvedPackageFullNameForPackageDependency2
+@ stdcall GetIdForPackageDependencyContext(ptr ptr) kernelbase.GetIdForPackageDependencyContext
+@ stdcall ClosePackageInfo(ptr) kernelbase.ClosePackageInfo
+@ stdcall GetPackageInfo(ptr long ptr ptr ptr) kernelbase.GetPackageInfo
+@ stdcall VerifyPackageFamilyName(wstr) kernelbase.VerifyPackageFamilyName
+@ stdcall FormatApplicationUserModelId(wstr wstr ptr ptr) kernelbase.FormatApplicationUserModelId
 @ stdcall -norelay GetCurrentProcess() KERNEL32_GetCurrentProcess
 @ stdcall -norelay GetCurrentProcessId() KERNEL32_GetCurrentProcessId
 @ stdcall GetCurrentProcessorNumber() NTDLL.NtGetCurrentProcessorNumber
@@ -1640,6 +1655,7 @@
 @ stdcall WakeConditionVariable(ptr) NTDLL.RtlWakeConditionVariable
 @ stdcall -import WerGetFlags(ptr ptr)
 @ stdcall -import WerRegisterCustomMetadata(wstr wstr)
+@ stdcall WerRegisterAdditionalProcess(long long) kernelbase.WerRegisterAdditionalProcess
 @ stdcall -import WerRegisterFile(wstr long long)
 @ stdcall -import WerRegisterMemoryBlock(ptr long)
 @ stdcall -import WerRegisterRuntimeExceptionModule(wstr ptr)
