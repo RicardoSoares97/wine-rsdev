@@ -20,6 +20,44 @@ carregada via `WINEDLLOVERRIDES=appxdeploymentclient=n`, que faz de:
 As alterações ao próprio código-fonte do Wine (fora deste diretório) estão no
 resto deste commit/branch, nos ficheiros normais de `dlls/*`.
 
+## Trabalhar noutra máquina — o que é preciso
+
+Este repositório (o branch `teams-native-composition`) contém **todo o
+código-fonte necessário**: os ficheiros `dlls/*`/`include/*` do Wine em si, e
+este diretório inteiro com as fontes do shim (`main.c`, `package.c`,
+`pkginfo.c`, `composition.c`, `miniz*`, os `.reg`, `build.sh`, `deploy.sh`,
+`test-harness.sh`). Não é preciso copiar nada manualmente de outra máquina —
+**exceto** um item, deliberadamente fora do git:
+
+- **`embedded-packages/`** — pacotes `.msix` reais da Microsoft (Teams,
+  Windows App Runtime) usados como fallback de staging em `pkginfo.c`. Não
+  vão para o git (direitos de autor + ~63MB). Numa máquina nova é preciso
+  obter esses `.msix` por fora (instalador oficial do Teams/WebView2/Windows
+  App SDK) e colocá-los em `contrib/teams-appx-shim/embedded-packages/` antes
+  de instalar — ver `pkginfo.c` para o nome/ordem exato que cada função
+  espera.
+
+Passos numa máquina nova (assumindo um `WINEPREFIX` Wine-Staging 11.16 já
+criado, com Teams "instalado" via Lutris/instalador MSIX da forma habitual):
+
+```sh
+sudo apt install wine-staging gcc-mingw-w64-i686 gcc-mingw-w64-x86-64   # toolchain para winegcc -b
+cd contrib/teams-appx-shim
+./build.sh                     # compila appxdeploymentclient.dll (64-bit) e appxdeploymentclient32.dll (32-bit)
+./deploy.sh [caminho-do-prefix]  # copia para system32/syswow64 + importa todos os register_*.reg
+                                  # (por omissão usa $HOME/.local/share/lutris/teams)
+./test-harness.sh run 90       # corre o Teams com limpeza correta do wineserver
+```
+
+`build.sh`/`deploy.sh` foram escritos e verificados nesta sessão — antes
+disto **não existia nenhum script de build funcional** (o `Makefile.in`
+neste diretório está desatualizado: não lista `composition.c` nem
+`pkginfo.c`, e referencia um `classes.idl` que não é sequer usado — é um
+resto do módulo Wine real e separado `dlls/appxdeploymentclient` de Mohamad
+Al-Jaf, cujo nome este projeto reaproveita). O comando real (`winegcc -shared
+-b x86_64-w64-mingw32/-i686-w64-mingw32 ...`) foi reconstruído e testado do
+zero, com sucesso, a partir apenas do que está commitado neste diretório.
+
 ## O que já funciona (verificado, não suposição)
 
 1. **Instalação MSIX real**: `WindowsAppRuntimeInstall-x64.exe` instala DLLs

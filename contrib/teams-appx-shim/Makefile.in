@@ -1,7 +1,20 @@
+# NOTE: this project is standalone (not part of the Wine source tree), so
+# this Makefile.in is NOT actually usable as-is — it's only kept as a record
+# of module/import metadata. Use ./build.sh to actually build; it invokes
+# winegcc directly and is verified to work. classes.idl is intentionally
+# left out of SOURCES below: it's unused leftover from the real, separate
+# upstream Wine dlls/appxdeploymentclient module (by Mohamad Al-Jaf) whose
+# name this project's output DLL reuses; our own main.c doesn't consume it.
+
 MODULE  = appxdeploymentclient.dll
 IMPORTS = combase
 
 SOURCES = \
-	classes.idl \
 	main.c \
-	package.c
+	package.c \
+	pkginfo.c \
+	composition.c \
+	miniz.c \
+	miniz_tdef.c \
+	miniz_tinfl.c \
+	miniz_zip.c
